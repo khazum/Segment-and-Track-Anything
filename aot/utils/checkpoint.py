@@ -6,7 +6,7 @@ import numpy as np
 
 def load_network_and_optimizer(net, opt, pretrained_dir, gpu, scaler=None):
     pretrained = torch.load(pretrained_dir,
-                            map_location=torch.device("cuda:" + str(gpu)))
+                        map_location=torch.device("cuda:" + str(gpu)), weights_only=False)
     pretrained_dict = pretrained['state_dict']
     model_dict = net.state_dict()
     pretrained_dict_update = {}
@@ -30,7 +30,7 @@ def load_network_and_optimizer(net, opt, pretrained_dir, gpu, scaler=None):
 
 def load_network_and_optimizer_v2(net, opt, pretrained_dir, gpu, scaler=None):
     pretrained = torch.load(pretrained_dir,
-                            map_location=torch.device("cuda:" + str(gpu)))
+                        map_location=torch.device("cuda:" + str(gpu)), weights_only=False)
     # load model
     pretrained_dict = pretrained['state_dict']
     model_dict = net.state_dict()
@@ -75,7 +75,7 @@ def load_network_and_optimizer_v2(net, opt, pretrained_dir, gpu, scaler=None):
 
 def load_network(net, pretrained_dir, gpu):
     pretrained = torch.load(pretrained_dir,
-                            map_location=torch.device("cuda:" + str(gpu)))
+                        map_location=torch.device("cuda:" + str(gpu)), weights_only=False)
     if 'state_dict' in pretrained.keys():
         pretrained_dict = pretrained['state_dict']
     elif 'model' in pretrained.keys():
