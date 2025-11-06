@@ -6,6 +6,7 @@ import torchaudio
 import numpy as np
 from torch.amp import autocast
 from ast_master.src.models import ASTModel
+from collections import OrderedDict
 
 current_directory = os.path.dirname(os.path.abspath(__file__))  
 sys.path.append(current_directory)  
@@ -63,7 +64,6 @@ def make_features(wav_name, mel_bins, target_length=1024):
     fbank = (fbank - (-4.2677393)) / (4.5689974 * 2)
     return fbank
 
-
 def load_label(label_csv):
     with open(label_csv, 'r') as f:
         reader = csv.reader(f, delimiter=',')
@@ -77,33 +77,49 @@ def load_label(label_csv):
         labels.append(label)
     return labels
 
-def ASTpredict():
-    # Assume each input spectrogram has 1024 time frames
+_AST_MODEL = None
+_AST_LABELS = None
+
+def ASTpredict(audio_path: str = "./audio.flac"):    # Assume each input spectrogram has 1024 time frames
     input_tdim = 1024
     checkpoint_path = './ast_master/pretrained_models/audio_mdl.pth'
-    # now load the visualization model
-    ast_mdl = ASTModelVis(label_dim=527, input_tdim=input_tdim, imagenet_pretrain=False, audioset_pretrain=False)
-    print(f'[*INFO] load checkpoint: {checkpoint_path}')
-    checkpoint = torch.load(checkpoint_path, map_location='cuda')
-    audio_model = torch.nn.DataParallel(ast_mdl, device_ids=[0])
-    audio_model.load_state_dict(checkpoint)
-    audio_model = audio_model.to(torch.device("cuda:0"))
-    audio_model.eval()          
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    # Load the AudioSet label set
-    label_csv = './ast_master/egs/audioset/data/class_labels_indices.csv'       # label and indices for audioset data
-    labels = load_label(label_csv)
+    global _AST_MODEL, _AST_LABELS
+    if _AST_MODEL is None:
+        # Load the visualization model once
+        ast_mdl = ASTModelVis(label_dim=527, input_tdim=input_tdim, imagenet_pretrain=False, audioset_pretrain=False)
+        print(f'[*INFO] load checkpoint: {checkpoint_path}')
+        ckpt = torch.load(checkpoint_path, map_location=device)
+        # Handle DP/non-DP keys
+        if isinstance(ckpt, dict):
+            state = ckpt.get("state_dict", ckpt)
+        else:
+            state = ckpt
+        if not torch.cuda.is_available():
+            # Strip potential 'module.' prefixes for CPU loads
+            new_state = OrderedDict()
+            for k, v in state.items():
+                new_state[k[7:]] = v if k.startswith("module.") else v
+            state = new_state
+        # Wrap in DP only if CUDA is present
+        model = ast_mdl
+        if torch.cuda.is_available():
+            model = torch.nn.DataParallel(ast_mdl)
+        missing_unexpected = model.load_state_dict(state, strict=False)
+        _AST_MODEL = model.to(device).eval()
 
-    feats = make_features("./audio.flac", mel_bins=128)           # shape(1024, 128)
-    feats_data = feats.expand(1, input_tdim, 128)           # reshape the feature
-    feats_data = feats_data.to(torch.device("cuda:0"))
-    # do some masking of the input
-    #feats_data[:, :512, :] = 0.
+        # Load labels once
+        label_csv = './ast_master/egs/audioset/data/class_labels_indices.csv'
+        _AST_LABELS = load_label(label_csv)
+
+    feats = make_features(audio_path, mel_bins=128)  # shape(1024, 128)
+    feats_data = feats.expand(1, input_tdim, 128).to(device)
 
     # Make the prediction
     with torch.no_grad():
-        with autocast('cuda'):
-            output = audio_model.forward(feats_data)
+        with autocast(device_type="cuda", enabled=torch.cuda.is_available()):
+            output = _AST_MODEL.forward(feats_data)
             output = torch.sigmoid(output)
     result_output = output.data.cpu().numpy()[0]
     sorted_indexes = np.argsort(result_output)[::-1]
@@ -111,12 +127,12 @@ def ASTpredict():
     # Print audio tagging top probabilities
     print('Predice results:')
     for k in range(10):
-        print('- {}: {:.4f}'.format(np.array(labels)[sorted_indexes[k]], result_output[sorted_indexes[k]]))
+        print('- {}: {:.4f}'.format(np.array(_AST_LABELS)[sorted_indexes[k]], result_output[sorted_indexes[k]]))
     #return the top 10 labels and their probabilities
     top_labels_probs = {}
     top_labels = {}
     for k in range(10):  
-        label = np.array(labels)[sorted_indexes[k]]  
+        label = np.array(_AST_LABELS)[sorted_indexes[k]] 
         prob = result_output[sorted_indexes[k]]  
         top_labels[k]= label
         top_labels_probs[k]= prob

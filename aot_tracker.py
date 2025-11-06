@@ -32,17 +32,17 @@ class AOTTracker:
         # Keep a canonical dtype to avoid float/half mismatches with DeAOT
         # (many checkpoints run in fp16). We'll cast inputs/labels to this dtype.
         self.param_dtype = next(self.model.parameters()).dtype
-        self.engine = build_engine(cfg.MODEL_ENGINE,
-                                   phase='eval',
-                                   aot_model=self.model,
-                                   gpu_id=gpu_id,
-                                   short_term_mem_skip=1,
-                                   long_term_mem_gap=cfg.TEST_LONG_TERM_MEM_GAP,
-                                   max_len_long_term=cfg.MAX_LEN_LONG_TERM)
+        self.engine = build_engine( cfg.MODEL_ENGINE,
+                                    phase='eval',
+                                    aot_model=self.model,
+                                    gpu_id=gpu_id,
+                                    short_term_mem_skip=1,
+                                    long_term_mem_gap=cfg.TEST_LONG_TERM_MEM_GAP,
+                                    max_len_long_term=cfg.MAX_LEN_LONG_TERM)
         self.transform = transforms.Compose([
-            tr.MultiRestrictSize(cfg.TEST_MAX_SHORT_EDGE,
-                                 cfg.TEST_MAX_LONG_EDGE, cfg.TEST_FLIP, 
-                                 cfg.TEST_MULTISCALE, cfg.MODEL_ALIGN_CORNERS),
+            tr.MultiRestrictSize(   cfg.TEST_MAX_SHORT_EDGE,
+                                    cfg.TEST_MAX_LONG_EDGE, cfg.TEST_FLIP, 
+                                    cfg.TEST_MULTISCALE, cfg.MODEL_ALIGN_CORNERS),
             tr.MultiToTensor()
         ])
 
@@ -80,8 +80,6 @@ class AOTTracker:
             self.engine.add_reference_frame_incremental(frame_t, _mask, obj_nums=obj_nums, frame_step=frame_step)
         else:
             self.engine.add_reference_frame(frame_t, _mask, obj_nums=obj_nums, frame_step=frame_step)
-
-
 
     @torch.no_grad()
     def track(self, image: np.ndarray) -> torch.Tensor:
@@ -130,8 +128,8 @@ class AOTTrackerInferEngine(AOTInferEngine):
         aot_num = max(np.ceil(obj_nums / self.max_aot_obj_num), 1)
         while aot_num > len(self.aot_engines):
             new_engine = AOTEngine(self.AOT, self.gpu_id,
-                                   self.long_term_mem_gap,
-                                   self.short_term_mem_skip)
+                                    self.long_term_mem_gap,
+                                    self.short_term_mem_skip)
             new_engine.eval()
             self.aot_engines.append(new_engine)
 
@@ -153,7 +151,6 @@ class AOTTrackerInferEngine(AOTInferEngine):
                 img_embs = aot_engine.curr_enc_embs
 
         self.update_size()
-
 
 
 class DeAOTTrackerInferEngine(DeAOTInferEngine):
@@ -167,8 +164,8 @@ class DeAOTTrackerInferEngine(DeAOTInferEngine):
         aot_num = max(np.ceil(obj_nums / self.max_aot_obj_num), 1)
         while aot_num > len(self.aot_engines):
             new_engine = DeAOTEngine(self.AOT, self.gpu_id,
-                                   self.long_term_mem_gap,
-                                   self.short_term_mem_skip)
+                                    self.long_term_mem_gap,
+                                    self.short_term_mem_skip)
             new_engine.eval()
             self.aot_engines.append(new_engine)
 
@@ -190,7 +187,6 @@ class DeAOTTrackerInferEngine(DeAOTInferEngine):
                 img_embs = aot_engine.curr_enc_embs
 
         self.update_size()
-
 
 def get_aot(args):
     """Factory for :class:`AOTTracker` from a simple args dict.

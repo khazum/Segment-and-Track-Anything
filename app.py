@@ -1,6 +1,7 @@
 import os
 import gradio as gr
 from model_args import segtracker_args,sam_args,aot_args
+import tempfile
 from SegTracker import SegTracker
 from tool.transfer_tools import draw_outline, draw_points
 import cv2
@@ -23,14 +24,40 @@ def clean():
     """Reset UI state for a new input."""
     return None, None, None, None, None, None, [[], []]
 
+def _safe_extract_images(zip_path: str, dest_dir: str) -> None:
+    """
+    Safely extract only image files from a zip into dest_dir.
+    Prevents Zip Slip by validating real paths.
+    """
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for m in zf.infolist():
+            # Skip directories and non-images early
+            name = m.filename
+            if name.endswith("/") or not name.lower().endswith(IMAGE_EXTS):
+                continue
+            # Resolve final path and ensure it's inside dest_dir
+            target_path = os.path.join(dest_dir, name)
+            real_target = os.path.realpath(target_path)
+            real_base = os.path.realpath(dest_dir)
+            if not real_target.startswith(real_base + os.sep):
+                # Malicious path; skip
+                continue
+            os.makedirs(os.path.dirname(real_target), exist_ok=True)
+            with zf.open(m) as src, open(real_target, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+
 def audio_to_text(input_video, label_num, threshold):
     # Extract audio track and run AST prediction
-    with VideoFileClip(input_video) as video:
-        audio = video.audio
-        video_without_audio = video.set_audio(None)
-        video_without_audio.write_videofile("video_without_audio.mp4")
-        audio.write_audiofile("audio.flac", codec="flac") 
-    top_labels,top_labels_probs = ASTpredict()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        audio_path = os.path.join(tmpdir, "audio.flac")
+        video_wo_audio_path = os.path.join(tmpdir, "video_wo_audio.mp4")
+        with VideoFileClip(input_video) as video:
+            # Strip audio (for downstream video-only usage if needed)
+            video.set_audio(None).write_videofile(video_wo_audio_path, logger=None, audio=False)
+            # Extract audio to a temp file
+            video.audio.write_audiofile(audio_path, codec="flac", logger=None)
+        # Run AST on the extracted audio (CPU or GPU as available)
+        top_labels, top_labels_probs = ASTpredict(audio_path)
     # Build the (label -> prob) mapping and concatenated text
     kept = {
         str(top_labels[k]): float(top_labels_probs[k])
@@ -47,9 +74,9 @@ def get_click_prompt(click_stack, point):
     )
     
     prompt = {
-        "points_coord":click_stack[0],
-        "points_mode":click_stack[1],
-        "multimask":"True",
+        "points_coord": click_stack[0],
+        "points_mode":  click_stack[1],
+        "multimask":    True,  # bool, not string
     }
 
     return prompt
@@ -82,8 +109,8 @@ def get_meta_from_img_seq(input_img_seq):
         shutil.rmtree(file_path)
     os.makedirs(file_path, exist_ok=True)
     # Unzip using Python stdlib for portability/safety
-    with zipfile.ZipFile(input_img_seq.name, 'r') as zf:
-        zf.extractall(file_path)
+    # Safely extract only images (prevents Zip Slip)
+    _safe_extract_images(input_img_seq.name, file_path)
 
     imgs_path = sorted(
         os.path.join(file_path, n)
@@ -101,7 +128,8 @@ def get_meta_from_img_seq(input_img_seq):
 def SegTracker_add_first_frame(Seg_Tracker, origin_frame, predicted_mask):
     # Use autocast on CUDA if available for speed, otherwise no-op.
     device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
-    with torch.amp.autocast(device_type):
+    # Enable autocast only on CUDA to avoid CPU bfloat16 surprises
+    with torch.amp.autocast(device_type=device_type, enabled=(device_type == 'cuda')):
         # Reset the first frame's mask
         frame_idx = 0
         Seg_Tracker.restart_tracker()
@@ -205,20 +233,18 @@ def roll_back_undo_click_stack_and_refine_seg(Seg_Tracker, origin_frame, click_s
     else:
         return Seg_Tracker, origin_frame, [[], []]
 
-
 def seg_acc_click(Seg_Tracker, prompt, origin_frame):
     # seg acc to click
     predicted_mask, masked_frame = Seg_Tracker.seg_acc_click( 
-                                                      origin_frame=origin_frame, 
-                                                      coords=np.array(prompt["points_coord"]),
-                                                      modes=np.array(prompt["points_mode"]),
-                                                      multimask=prompt["multimask"],
+                                                        origin_frame=origin_frame, 
+                                                        coords=np.array(prompt["points_coord"]),
+                                                        modes=np.array(prompt["points_mode"]),
+                                                        multimask=prompt["multimask"],
                                                     )
 
     Seg_Tracker = SegTracker_add_first_frame(Seg_Tracker, origin_frame, predicted_mask)
 
     return masked_frame
-
 
 def sam_click(Seg_Tracker, origin_frame, point_mode, click_stack, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, evt:gr.SelectData):
     """
@@ -246,7 +272,6 @@ def sam_click(Seg_Tracker, origin_frame, point_mode, click_stack, aot_model, lon
 
     return Seg_Tracker, masked_frame, click_stack
 
-
 def roll_back_sam_click(Seg_Tracker, origin_frame, point_mode, click_stack, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, input_video, input_img_seq, frame_num, refine_idx, evt:gr.SelectData):
     """
     Args:
@@ -259,7 +284,6 @@ def roll_back_sam_click(Seg_Tracker, origin_frame, point_mode, click_stack, aot_
     if point_mode == "Positive":
         point = {"coord": [evt.index[0], evt.index[1]], "mode": 1}
     else:
-        # TODO：add everything positive points
         point = {"coord": [evt.index[0], evt.index[1]], "mode": 0}
 
     if Seg_Tracker is None:
@@ -281,7 +305,6 @@ def roll_back_sam_click(Seg_Tracker, origin_frame, point_mode, click_stack, aot_
     curr_mask[curr_mask == refine_idx]  = 0
     curr_mask[predicted_mask != 0]  = refine_idx
     predicted_mask=curr_mask
-
 
     Seg_Tracker = SegTracker_add_first_frame(Seg_Tracker, origin_frame, predicted_mask)
 
@@ -349,7 +372,6 @@ def tracking_objects(Seg_Tracker, input_video, input_img_seq, fps, frame_num=0):
     print("Start tracking !")
     # Start actual tracking pipeline
     return tracking_objects_in_video(Seg_Tracker, input_video, input_img_seq, fps, frame_num)
-
 
 def res_by_num(input_video, input_img_seq, frame_num):
     if input_video is not None:
@@ -419,7 +441,6 @@ def show_res_by_slider(input_video, input_img_seq, frame_per):
         video_name = os.path.basename(input_video).split('.')[0]
     elif input_img_seq is not None:
         file_name = input_img_seq.name.split('/')[-1].split('.')[0]
-        file_path = f'./assets/{file_name}'
         video_name = file_name
     else:
         print("Not find output res")
@@ -441,7 +462,6 @@ def show_res_by_slider(input_video, input_img_seq, frame_per):
 
 def choose_obj_to_refine(input_video, input_img_seq, Seg_Tracker, frame_num, evt:gr.SelectData):
     chosen_frame_show, curr_mask, _ = res_by_num(input_video, input_img_seq, frame_num)
-    # curr_mask=Seg_Tracker.first_frame_mask
     
     if curr_mask is not None and chosen_frame_show is not None:
         idx = curr_mask[evt.index[1],evt.index[0]]
@@ -468,12 +488,8 @@ def show_chosen_idx_to_refine(aot_model, long_term_mem, max_len_long_term, sam_g
     Seg_Tracker.sam.have_embedded = False
     Seg_Tracker.sam.interactive_predictor.features = None
     return ori_frame, Seg_Tracker, ori_frame, [[], []], ""
-    
-
-
 
 def seg_track_app():
-
     ##########################################################
     ######################  Front-end ########################
     ##########################################################
@@ -492,7 +508,6 @@ def seg_track_app():
         origin_frame = gr.State(None)
         Seg_Tracker = gr.State(None)
 
-        current_frame_num = gr.State(None)
         refine_idx = gr.State(None)
         frame_num = gr.State(None)
 
@@ -519,7 +534,6 @@ def seg_track_app():
 
                 input_first_frame = gr.Image(label='Segment result of first frame',interactive=True, height=550)
 
-
                 tab_everything = gr.Tab(label="Everything")
                 with tab_everything:
                     with gr.Row():
@@ -535,11 +549,6 @@ def seg_track_app():
                                     interactive=True
                                     )
 
-                            # every_reset_but = gr.Button(
-                            #             value="Reset",
-                            #             interactive=True
-                            #                     )
-
                 tab_click = gr.Tab(label="Click")
                 with tab_click:
                     with gr.Row():
@@ -554,20 +563,12 @@ def seg_track_app():
                                     value="Undo",
                                     interactive=True
                                     )
-                            # click_reset_but = gr.Button(
-                            #             value="Reset",
-                            #             interactive=True
-                            #                     )
 
                 tab_stroke = gr.Tab(label="Stroke")
                 with tab_stroke:
                     drawing_board = gr.ImageEditor(label='Drawing Board', brush=gr.Brush(default_size=10), interactive=True)
                     with gr.Row():
                         seg_acc_stroke = gr.Button(value="Segment", interactive=True)
-                        # stroke_reset_but = gr.Button(
-                        #                 value="Reset",
-                        #                 interactive=True
-                        #                         )
                 
                 tab_text = gr.Tab(label="Text")
                 with tab_text:
@@ -635,8 +636,6 @@ def seg_track_app():
                                 )
                                 long_term_mem = gr.Slider(label="long term memory gap", minimum=1, maximum=9999, value=9999, step=1)
                                 max_len_long_term = gr.Slider(label="max len of long term memory", minimum=1, maximum=9999, value=9999, step=1)
-
-
                     
                     with gr.Column():
                         new_object_button = gr.Button(
@@ -659,8 +658,6 @@ def seg_track_app():
                 with gr.Row():
                     with gr.Column(scale=1):
                         with gr.Accordion("roll back options", open=False):
-                        # tab_show_res = gr.Tab(label="Segment result of all frames")
-                        # with tab_show_res:
                             output_res = gr.Image(label='Segment result of all frames', height=550)
                             frame_per = gr.Slider(
                                 label = "Percentage of Frames Viewed",
@@ -695,7 +692,6 @@ def seg_track_app():
     ##########################################################
     ######################  back-end #########################
     ##########################################################
-
         # listen to the input_video to get the first frame of video
         input_video.change(
             fn=get_meta_from_video,
@@ -746,8 +742,7 @@ def seg_track_app():
                 click_stack,
             ]
         )
-
-
+        
         extract_button.click(
             fn=get_meta_from_img_seq,
             inputs=[
@@ -758,9 +753,7 @@ def seg_track_app():
             ]
         )
 
-
         # ------------------- Interactive component -----------------
-
         # listen to the tab to init SegTracker
         tab_everything.select(
             fn=init_SegTracker,
@@ -777,7 +770,6 @@ def seg_track_app():
                 Seg_Tracker, input_first_frame, click_stack, grounding_caption
             ],
             queue=False,
-            
         )
         
         tab_click.select(
@@ -867,9 +859,7 @@ def seg_track_app():
             outputs=[
                 Seg_Tracker, input_first_frame
             ]
-
         )
-
 
         # Use SAM to segment everything for the first frame of video
         seg_every_first_frame.click(
@@ -883,7 +873,6 @@ def seg_track_app():
                 sam_gap,
                 max_obj_num,
                 points_per_side,
-
             ],
             outputs=[
                 Seg_Tracker,
@@ -964,9 +953,7 @@ def seg_track_app():
             ]
         )
 
-
         # ----------------- Refine Mask ---------------------------
-
         output_res.select(
             fn = choose_obj_to_refine,
             inputs=[
@@ -975,7 +962,6 @@ def seg_track_app():
             outputs=[output_res, refine_idx]
         )
         
-
         roll_back_button.click(
             fn=show_chosen_idx_to_refine,
             inputs=[
@@ -994,8 +980,6 @@ def seg_track_app():
             show_progress=False
         )
 
-
-
         roll_back_click_undo_but.click(
             fn = roll_back_undo_click_stack_and_refine_seg,
             inputs=[
@@ -1009,7 +993,7 @@ def seg_track_app():
                 input_video, input_img_seq, frame_num, refine_idx
             ],
             outputs=[
-               Seg_Tracker, refine_res, click_stack
+                Seg_Tracker, refine_res, click_stack
             ]
         ) 
 
@@ -1030,7 +1014,6 @@ def seg_track_app():
             ]
         )
 
-
         # Track object in video
         roll_back_track_for_video.click(
             fn=tracking_objects,
@@ -1045,9 +1028,7 @@ def seg_track_app():
             ]
         )
 
-
         # ----------------- Reset and Undo ---------------------------
-
         # Rest 
         reset_button.click(
             fn=init_SegTracker,
@@ -1067,56 +1048,6 @@ def seg_track_app():
             show_progress=False
         ) 
 
-
-
-        # every_reset_but.click(
-        #     fn=init_SegTracker,
-        #     inputs=[
-        #         aot_model,
-        #         sam_gap,
-        #         max_obj_num,
-        #         points_per_side,
-        #         origin_frame
-        #     ],
-        #     outputs=[
-        #         Seg_Tracker, input_first_frame, click_stack, grounding_caption
-        #     ],
-        #     queue=False,
-        #     show_progress=False
-        # ) 
-
-        # click_reset_but.click(
-        #     fn=init_SegTracker,
-        #     inputs=[
-        #         aot_model,
-        #         sam_gap,
-        #         max_obj_num,
-        #         points_per_side,
-        #         origin_frame
-        #     ],
-        #     outputs=[
-        #         Seg_Tracker, input_first_frame, click_stack, grounding_caption
-        #     ],
-        #     queue=False,
-        #     show_progress=False
-        # ) 
-
-        # stroke_reset_but.click(
-        #     fn=init_SegTracker_Stroke,
-        #     inputs=[
-        #         aot_model,
-        #         sam_gap,
-        #         max_obj_num,
-        #         points_per_side,
-        #         origin_frame,
-        #     ],
-        #     outputs=[
-        #         Seg_Tracker, input_first_frame, click_stack, drawing_board
-        #     ],
-        #     queue=False,
-        #     show_progress=False
-        # )
-
         # Undo click
         click_undo_but.click(
             fn = undo_click_stack_and_refine_seg,
@@ -1130,7 +1061,7 @@ def seg_track_app():
                 points_per_side,
             ],
             outputs=[
-               Seg_Tracker, input_first_frame, click_stack
+                Seg_Tracker, input_first_frame, click_stack
             ]
         )
 
@@ -1146,19 +1077,14 @@ def seg_track_app():
                 points_per_side,
             ],
             outputs=[
-               Seg_Tracker, input_first_frame, click_stack
+                Seg_Tracker, input_first_frame, click_stack
             ]
         )
         
         with gr.Tab(label='Video example'):
             gr.Examples(
                 examples=[
-                    # os.path.join(os.path.dirname(__file__), "assets", "840_iSXIa0hE8Ek.mp4"),
                     os.path.join(os.path.dirname(__file__), "assets", "blackswan.mp4"),
-                    # os.path.join(os.path.dirname(__file__), "assets", "bear.mp4"),
-                    # os.path.join(os.path.dirname(__file__), "assets", "camel.mp4"),
-                    # os.path.join(os.path.dirname(__file__), "assets", "skate-park.mp4"),
-                    # os.path.join(os.path.dirname(__file__), "assets", "swing.mp4"),
                     ],
                 inputs=[input_video],
             )
@@ -1173,7 +1099,6 @@ def seg_track_app():
     
     app.queue(default_concurrency_limit=1)
     app.launch(server_name="localhost", server_port=12345, debug=True, share=True)
-
 
 if __name__ == "__main__":
     seg_track_app()

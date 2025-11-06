@@ -16,9 +16,13 @@ def images_to_video(img_dir: str, out_file: str, fps: int = 10) -> None:
         raise ValueError(f"No images found in: {img_dir}")
 
     first = cv2.imread(os.path.join(img_dir, img_names[0]))
+    if first is None:
+        raise ValueError(f"Failed to read first image: {img_names[0]}")
     height, width = first.shape[:2]
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(out_file, fourcc, fps, (width, height))
+    if not out.isOpened():
+        raise RuntimeError(f"Failed to open VideoWriter for {out_file}")
     try:
         for name in img_names:
             img = cv2.imread(os.path.join(img_dir, name))

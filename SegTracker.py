@@ -7,13 +7,13 @@ import numpy as np
 from aot_tracker import get_aot
 from seg_track_anything import draw_mask
 from tool.detector import Detector
-from tool.segmentor import Segmentor
+from tool.segmenter import Segmenter
 from tool.transfer_tools import draw_outline, draw_points
 
 class SegTracker:
     def __init__(self, segtracker_args, sam_args, aot_args) -> None:
-        """Initialize SAM (segmentor), AOT tracker, and detector with runtime args."""
-        self.sam = Segmentor(sam_args)
+        """Initialize SAM (segmenter), AOT tracker, and detector with runtime args."""
+        self.sam = Segmenter(sam_args)
         self.tracker = get_aot(aot_args)
         self.detector = Detector(self.sam.device)
         self.sam_gap = segtracker_args['sam_gap']
@@ -38,7 +38,6 @@ class SegTracker:
         Return:
             origin_merged_mask: numpy array (h,w)
         '''
-        frame = frame[:, :, ::-1]
         anns = self.sam.everything_generator.generate(frame)
 
         # anns is a list recording all predictions in an image
@@ -184,9 +183,6 @@ class SegTracker:
         masked_frame = draw_mask(origin_frame.copy(), refined_merged_mask)
 
         # draw points
-        # self.everything_labels = np.array(self.everything_labels).astype(np.int64)
-        # self.everything_points = np.array(self.everything_points).astype(np.int64)
-
         masked_frame = draw_points(coords, modes, masked_frame)
 
         # draw outline

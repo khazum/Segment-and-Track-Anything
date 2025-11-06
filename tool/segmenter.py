@@ -1,8 +1,10 @@
 import torch
 import numpy as np
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
+from typing import Union
 
-class Segmentor:
+
+class Segmenter:
     def __init__(self, sam_args):
         """
         sam_args:
@@ -10,7 +12,16 @@ class Segmentor:
             generator_args: args for everything_generator
             gpu_id: device
         """
-        self.device = sam_args["gpu_id"]
+        gpu_id: Union[int, str, torch.device] = sam_args.get("gpu_id", 0)
+        if isinstance(gpu_id, int) and torch.cuda.is_available():
+            device = torch.device(f"cuda:{gpu_id}")
+        elif isinstance(gpu_id, str):
+            device = torch.device(gpu_id)
+        elif isinstance(gpu_id, torch.device):
+            device = gpu_id
+        else:
+            device = torch.device("cpu")
+        self.device = device
         self.sam = sam_model_registry[sam_args["model_type"]](checkpoint=sam_args["sam_checkpoint"])
         self.sam.to(device=self.device)
         self.everything_generator = SamAutomaticMaskGenerator(model=self.sam, **sam_args['generator_args'])
@@ -44,8 +55,7 @@ class Segmentor:
         
     @torch.no_grad()
     def segment_with_click(self, origin_frame, coords, modes, multimask=True):
-        '''
-            
+        ''' 
             return: 
                 mask: one-hot 
         '''
@@ -72,8 +82,6 @@ class Segmentor:
             self.interactive_predictor.set_image(origin_frame)
         else:
             self.set_image(origin_frame)
-        # coord = np.array([[int((bbox[1][0] - bbox[0][0]) / 2.),  int((bbox[1][1] - bbox[0][1]) / 2)]])
-        # point_label = np.array([1])
 
         masks, scores, logits = self.interactive_predictor.predict(
             point_coords=None,
