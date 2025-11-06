@@ -11,11 +11,19 @@ from tool.segmenter import Segmenter
 from tool.transfer_tools import draw_outline, draw_points
 
 class SegTracker:
-    def __init__(self, segtracker_args, sam_args, aot_args) -> None:
+    def __init__(self, segtracker_args, sam_args, aot_args, gd_args=None) -> None:
         """Initialize SAM (segmenter), AOT tracker, and detector with runtime args."""
         self.sam = Segmenter(sam_args)
         self.tracker = get_aot(aot_args)
-        self.detector = Detector(self.sam.device)
+        # Allow dynamic GroundingDINO checkpoint/config selection
+        if gd_args is None:
+            self.detector = Detector(self.sam.device)
+        else:
+            self.detector = Detector(
+                self.sam.device,
+                ckpt_path=gd_args.get("ckpt_path", "./ckpt/groundingdino_swint_ogc.pth"),
+                config_file=gd_args.get("config_file", "config/GroundingDINO_SwinT_OGC.py"),
+            )
         self.sam_gap = segtracker_args['sam_gap']
         self.min_area = segtracker_args['min_area']
         self.max_obj_num = segtracker_args['max_obj_num']

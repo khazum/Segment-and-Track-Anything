@@ -1,3 +1,4 @@
+import os
 import torch
 import numpy as np
 import cv2
@@ -8,18 +9,30 @@ from groundingdino.util.slconfig import SLConfig
 from groundingdino.util.utils import clean_state_dict
 from groundingdino.util.inference import annotate, predict
 import groundingdino.datasets.transforms as T
+import groundingdino
 
 from torchvision.ops import box_convert
+def _resolve_config_path(config_file: str) -> str:
+    """Return a usable path for a GroundingDINO config, trying local repo first, then the pip package."""
+    if os.path.exists(config_file):
+        return config_file
+    pkg_base = os.path.join(os.path.dirname(groundingdino.__file__), "config")
+    candidate = os.path.join(pkg_base, os.path.basename(config_file))
+    if os.path.exists(candidate):
+        return candidate
+    # Fallback to SwinT OGC config in this repo
+    return "config/GroundingDINO_SwinT_OGC.py"
 
 class Detector:
-    def __init__(self, device):
-        config_file = "config/GroundingDINO_SwinT_OGC.py"
-        grounding_dino_ckpt = './ckpt/groundingdino_swint_ogc.pth'
-        args = SLConfig.fromfile(config_file) 
+    def __init__(self, device, ckpt_path: str = "./ckpt/groundingdino_swint_ogc.pth",
+                 config_file: str = "config/GroundingDINO_SwinT_OGC.py"):
+        config_file = _resolve_config_path(config_file)
+        args = SLConfig.fromfile(config_file)
         args.device = device
         self.deivce = device
         self.gd = build_grounding_dino(args)
 
+        grounding_dino_ckpt = ckpt_path
         checkpoint = torch.load(grounding_dino_ckpt, map_location='cpu')
         log = self.gd.load_state_dict(clean_state_dict(checkpoint['model']), strict=False)
         print("Model loaded from {} \n => {}".format(grounding_dino_ckpt, log))

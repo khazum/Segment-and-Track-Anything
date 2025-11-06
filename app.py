@@ -1,6 +1,6 @@
 import os
 import gradio as gr
-from model_args import segtracker_args,sam_args,aot_args
+from model_args import segtracker_args, sam_args, aot_args, gd_args, SAM_CKPT_TO_TYPE, GD_CKPT_TO_CONFIG
 import tempfile
 from SegTracker import SegTracker
 from tool.transfer_tools import draw_outline, draw_points
@@ -45,6 +45,26 @@ def _safe_extract_images(zip_path: str, dest_dir: str) -> None:
             os.makedirs(os.path.dirname(real_target), exist_ok=True)
             with zf.open(m) as src, open(real_target, "wb") as dst:
                 shutil.copyfileobj(src, dst)
+                
+def _infer_sam_model_type(ckpt_path: str) -> str:
+    import os
+    base = os.path.basename(ckpt_path)
+    for known, mtype in SAM_CKPT_TO_TYPE.items():
+        if base == os.path.basename(known):
+            return mtype
+    # Heuristic fallback
+    if "vit_h" in base: return "vit_h"
+    if "vit_l" in base: return "vit_l"
+    return "vit_b"
+
+def _gd_config_for_ckpt(ckpt_path: str) -> str:
+    import os
+    base = os.path.basename(ckpt_path)
+    for known, cfg in GD_CKPT_TO_CONFIG.items():
+        if base == os.path.basename(known):
+            return cfg
+    # Default to SwinT OGC
+    return "config/GroundingDINO_SwinT_OGC.py"
 
 def audio_to_text(input_video, label_num, threshold):
     # Extract audio track and run AST prediction
@@ -138,7 +158,7 @@ def SegTracker_add_first_frame(Seg_Tracker, origin_frame, predicted_mask):
 
     return Seg_Tracker
 
-def init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame):
+def init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame, sam_ckpt, gd_ckpt):
     
     if origin_frame is None:
         return None, origin_frame, [[], []], ""
@@ -152,13 +172,20 @@ def init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_ob
     segtracker_args["sam_gap"] = sam_gap
     segtracker_args["max_obj_num"] = max_obj_num
     sam_args["generator_args"]["points_per_side"] = points_per_side
-    
-    Seg_Tracker = SegTracker(segtracker_args, sam_args, aot_args)
+    # set selected SAM checkpoint/model
+    if sam_ckpt is not None:
+        sam_args["sam_checkpoint"] = sam_ckpt
+        sam_args["model_type"] = _infer_sam_model_type(sam_ckpt)
+    # set selected GroundingDINO checkpoint/config
+    _gd_cfg = _gd_config_for_ckpt(gd_ckpt) if gd_ckpt is not None else gd_args["config_file"]
+    gd_args["ckpt_path"] = gd_ckpt or gd_args["ckpt_path"]
+    gd_args["config_file"] = _gd_cfg    
+    Seg_Tracker = SegTracker(segtracker_args, sam_args, aot_args, gd_args)
     Seg_Tracker.restart_tracker()
 
     return Seg_Tracker, origin_frame, [[], []], ""
 
-def init_SegTracker_Stroke(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame):
+def init_SegTracker_Stroke(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame, sam_ckpt, gd_ckpt):
     
     if origin_frame is None:
         return None, origin_frame, [[], []], origin_frame
@@ -173,8 +200,14 @@ def init_SegTracker_Stroke(aot_model, long_term_mem, max_len_long_term, sam_gap,
     segtracker_args["sam_gap"] = sam_gap
     segtracker_args["max_obj_num"] = max_obj_num
     sam_args["generator_args"]["points_per_side"] = points_per_side
-    
-    Seg_Tracker = SegTracker(segtracker_args, sam_args, aot_args)
+    if sam_ckpt is not None:
+        sam_args["sam_checkpoint"] = sam_ckpt
+        sam_args["model_type"] = _infer_sam_model_type(sam_ckpt)
+    _gd_cfg = _gd_config_for_ckpt(gd_ckpt) if gd_ckpt is not None else gd_args["config_file"]
+    gd_args["ckpt_path"] = gd_ckpt or gd_args["ckpt_path"]
+    gd_args["config_file"] = _gd_cfg
+
+    Seg_Tracker = SegTracker(segtracker_args, sam_args, aot_args, gd_args)
     Seg_Tracker.restart_tracker()
     return Seg_Tracker, origin_frame, [[], []], origin_frame
 
@@ -310,10 +343,10 @@ def roll_back_sam_click(Seg_Tracker, origin_frame, point_mode, click_stack, aot_
 
     return Seg_Tracker, masked_frame, click_stack
 
-def sam_stroke(Seg_Tracker, origin_frame, drawing_board, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side):
+def sam_stroke(Seg_Tracker, origin_frame, drawing_board, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt):
 
     if Seg_Tracker is None:
-        Seg_Tracker, _ , _, _ = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame)
+        Seg_Tracker, _ , _, _ = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame, sam_ckpt, gd_ckpt)
     
     print("Stroke")
     mask = drawing_board["mask"]
@@ -324,9 +357,9 @@ def sam_stroke(Seg_Tracker, origin_frame, drawing_board, aot_model, long_term_me
 
     return Seg_Tracker, masked_frame, origin_frame
 
-def gd_detect(Seg_Tracker, origin_frame, grounding_caption, box_threshold, text_threshold, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side):
+def gd_detect(Seg_Tracker, origin_frame, grounding_caption, box_threshold, text_threshold, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt):
     if Seg_Tracker is None:
-        Seg_Tracker, _ , _, _ = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame)
+        Seg_Tracker, _ , _, _ = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame, sam_ckpt, gd_ckpt)
 
     print("Detect")
     predicted_mask, annotated_frame= Seg_Tracker.detect_and_seg(origin_frame, grounding_caption, box_threshold, text_threshold)
@@ -338,7 +371,7 @@ def gd_detect(Seg_Tracker, origin_frame, grounding_caption, box_threshold, text_
 
     return Seg_Tracker, masked_frame, origin_frame
 
-def segment_everything(Seg_Tracker, aot_model, long_term_mem, max_len_long_term, origin_frame, sam_gap, max_obj_num, points_per_side):
+def segment_everything(Seg_Tracker, aot_model, long_term_mem, max_len_long_term, origin_frame, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt):
     
     if Seg_Tracker is None:
         Seg_Tracker, _ , _, _ = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame)
@@ -472,11 +505,11 @@ def choose_obj_to_refine(input_video, input_img_seq, Seg_Tracker, frame_num, evt
     
     return chosen_frame_show, idx
 
-def show_chosen_idx_to_refine(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, input_video, input_img_seq, Seg_Tracker, frame_num, idx):
+def show_chosen_idx_to_refine(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt, input_video, input_img_seq, Seg_Tracker, frame_num, idx):
     chosen_frame_show, curr_mask, ori_frame = res_by_num(input_video, input_img_seq, frame_num)
     if Seg_Tracker is None:
         print("reset aot args, new SegTracker")
-        Seg_Tracker, _ , _, _ = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, ori_frame)
+        Seg_Tracker, _ , _, _ = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, ori_frame, sam_ckpt, gd_ckpt)
     Seg_Tracker.restart_tracker()
     Seg_Tracker.curr_idx = 1
     Seg_Tracker.object_idx = 1
@@ -636,6 +669,26 @@ def seg_track_app():
                                 )
                                 long_term_mem = gr.Slider(label="long term memory gap", minimum=1, maximum=9999, value=9999, step=1)
                                 max_len_long_term = gr.Slider(label="max len of long term memory", minimum=1, maximum=9999, value=9999, step=1)
+                            with gr.Accordion("model checkpoints", open=False):
+                                sam_ckpt = gr.Dropdown(
+                                    label="SAM checkpoint",
+                                    choices=[
+                                        "ckpt/sam_vit_h_4b8939.pth",
+                                        "ckpt/sam_vit_l_0b3195.pth",
+                                        "ckpt/sam_vit_b_01ec64.pth",
+                                    ],
+                                    value=sam_args["sam_checkpoint"],
+                                    interactive=True,
+                                )
+                                gd_ckpt = gr.Dropdown(
+                                    label="GroundingDINO checkpoint",
+                                    choices=[
+                                        "ckpt/groundingdino_swint_ogc.pth",
+                                        "ckpt/groundingdino_swinb_cogcoor.pth",
+                                    ],
+                                    value=gd_args["ckpt_path"],
+                                    interactive=True,
+                                )
                     
                     with gr.Column():
                         new_object_button = gr.Button(
@@ -764,8 +817,8 @@ def seg_track_app():
                 sam_gap,
                 max_obj_num,
                 points_per_side,
-                origin_frame
-            ],
+                origin_frame,
+                sam_ckpt, gd_ckpt],
             outputs=[
                 Seg_Tracker, input_first_frame, click_stack, grounding_caption
             ],
@@ -781,8 +834,8 @@ def seg_track_app():
                 sam_gap,
                 max_obj_num,
                 points_per_side,
-                origin_frame
-            ],
+                origin_frame,
+                sam_ckpt, gd_ckpt],
             outputs=[
                 Seg_Tracker, input_first_frame, click_stack, grounding_caption
             ],
@@ -799,7 +852,7 @@ def seg_track_app():
                 max_obj_num,
                 points_per_side,
                 origin_frame,
-            ],
+                sam_ckpt, gd_ckpt],
             outputs=[
                 Seg_Tracker, input_first_frame, click_stack, drawing_board
             ],
@@ -815,8 +868,8 @@ def seg_track_app():
                 sam_gap,
                 max_obj_num,
                 points_per_side,
-                origin_frame
-            ],
+                origin_frame,
+                sam_ckpt, gd_ckpt],
             outputs=[
                 Seg_Tracker, input_first_frame, click_stack, grounding_caption
             ],
@@ -832,8 +885,8 @@ def seg_track_app():
                 sam_gap,
                 max_obj_num,
                 points_per_side,
-                origin_frame
-            ],
+                origin_frame,
+                sam_ckpt, gd_ckpt],
             outputs=[
                 Seg_Tracker, input_first_frame, click_stack, grounding_caption
             ],
@@ -854,8 +907,8 @@ def seg_track_app():
             fn=gd_detect,
             inputs=[
                 Seg_Tracker, origin_frame, predicted_texts, box_threshold, text_threshold,
-                aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side
-            ],
+                aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side,
+                sam_ckpt, gd_ckpt],
             outputs=[
                 Seg_Tracker, input_first_frame
             ]
@@ -873,7 +926,7 @@ def seg_track_app():
                 sam_gap,
                 max_obj_num,
                 points_per_side,
-            ],
+                sam_ckpt, gd_ckpt],
             outputs=[
                 Seg_Tracker,
                 input_first_frame,
@@ -891,7 +944,7 @@ def seg_track_app():
                 sam_gap,
                 max_obj_num,
                 points_per_side,
-            ],
+                sam_ckpt, gd_ckpt],
             outputs=[
                 Seg_Tracker, input_first_frame, click_stack
             ]
@@ -908,7 +961,7 @@ def seg_track_app():
                 sam_gap,
                 max_obj_num,
                 points_per_side,
-            ],
+                sam_ckpt, gd_ckpt],
             outputs=[
                 Seg_Tracker, input_first_frame, drawing_board
             ]
@@ -919,8 +972,8 @@ def seg_track_app():
             fn=gd_detect, 
             inputs=[
                 Seg_Tracker, origin_frame, grounding_caption, box_threshold, text_threshold,
-                aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side
-                ], 
+                aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side,
+                sam_ckpt, gd_ckpt],
             outputs=[
                 Seg_Tracker, input_first_frame
                 ]
@@ -971,8 +1024,8 @@ def seg_track_app():
                 sam_gap,
                 max_obj_num,
                 points_per_side,
-                input_video, input_img_seq, Seg_Tracker, frame_num, refine_idx
-            ],
+                input_video, input_img_seq, Seg_Tracker, frame_num, refine_idx,
+                sam_ckpt, gd_ckpt],
             outputs=[
                 refine_res, Seg_Tracker, origin_frame, click_stack, grounding_caption
             ],
@@ -990,8 +1043,8 @@ def seg_track_app():
                 sam_gap,
                 max_obj_num,
                 points_per_side,
-                input_video, input_img_seq, frame_num, refine_idx
-            ],
+                input_video, input_img_seq, frame_num, refine_idx,
+                sam_ckpt, gd_ckpt],
             outputs=[
                 Seg_Tracker, refine_res, click_stack
             ]
@@ -1007,8 +1060,8 @@ def seg_track_app():
                 sam_gap,
                 max_obj_num,
                 points_per_side,
-                input_video, input_img_seq, frame_num, refine_idx
-            ],
+                input_video, input_img_seq, frame_num, refine_idx,
+                sam_ckpt, gd_ckpt],
             outputs=[
                 Seg_Tracker, refine_res, click_stack
             ]
@@ -1039,8 +1092,8 @@ def seg_track_app():
                 sam_gap,
                 max_obj_num,
                 points_per_side,
-                origin_frame
-            ],
+                origin_frame,
+                sam_ckpt, gd_ckpt],
             outputs=[
                 Seg_Tracker, input_first_frame, click_stack, grounding_caption
             ],
@@ -1059,7 +1112,7 @@ def seg_track_app():
                 sam_gap,
                 max_obj_num,
                 points_per_side,
-            ],
+                sam_ckpt, gd_ckpt],
             outputs=[
                 Seg_Tracker, input_first_frame, click_stack
             ]
@@ -1075,7 +1128,7 @@ def seg_track_app():
                 sam_gap,
                 max_obj_num,
                 points_per_side,
-            ],
+                sam_ckpt, gd_ckpt],
             outputs=[
                 Seg_Tracker, input_first_frame, click_stack
             ]
@@ -1089,7 +1142,7 @@ def seg_track_app():
                 inputs=[input_video],
             )
         
-        with gr.Tab(label='Image-seq expamle'):
+        with gr.Tab(label='Image-seq example'):
             gr.Examples(
                 examples=[
                     os.path.join(os.path.dirname(__file__), "assets", "840_iSXIa0hE8Ek.zip"),

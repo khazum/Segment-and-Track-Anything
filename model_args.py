@@ -26,3 +26,24 @@ segtracker_args = {
     'max_obj_num': 255, # maximal object number to track in a video
     'min_new_obj_iou': 0.8, # the background area ratio of a new object should > 80% 
 }
+
+# Map supported SAM checkpoints to their model_type
+SAM_CKPT_TO_TYPE = {
+    "ckpt/sam_vit_h_4b8939.pth": "vit_h",
+    "ckpt/sam_vit_l_0b3195.pth": "vit_l",
+    "ckpt/sam_vit_b_01ec64.pth": "vit_b",
+}
+
+# Map supported GroundingDINO checkpoints to config files
+GD_CKPT_TO_CONFIG = {
+    "ckpt/groundingdino_swint_ogc.pth": "config/GroundingDINO_SwinT_OGC.py",
+    # For SwinB, place this file under ./config or rely on the package fallback (see Detector below)
+    "ckpt/groundingdino_swinb_cogcoor.pth": "config/GroundingDINO_SwinB_cfg.py",
+}
+
+# Default GroundingDINO args; the app will override these at runtime
+gd_args = {
+    'ckpt_path': "ckpt/groundingdino_swint_ogc.pth",
+    'config_file': GD_CKPT_TO_CONFIG["ckpt/groundingdino_swint_ogc.pth"],
+    'gpu_id': 0,
+}
