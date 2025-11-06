@@ -8,6 +8,7 @@ import gc
 import imageio
 from scipy.ndimage import binary_dilation
 import zipfile
+import shutil
 
 def save_prediction(pred_mask,output_dir,file_name):
     save_mask = Image.fromarray(pred_mask.astype(np.uint8))
@@ -114,10 +115,8 @@ def video_type_input_tracking(SegTracker, input_video, io_args, video_name, fram
     
     # create dir to save predicted mask and masked frame
     if frame_num == 0:
-        if os.path.isdir(io_args['output_mask_dir']):
-            os.system(f"rm -r {io_args['output_mask_dir']}")
-        if os.path.isdir(io_args['output_masked_frame_dir']):
-            os.system(f"rm -r {io_args['output_masked_frame_dir']}")
+        shutil.rmtree(io_args['output_mask_dir'], ignore_errors=True)
+        shutil.rmtree(io_args['output_masked_frame_dir'], ignore_errors=True)
     output_mask_dir = io_args['output_mask_dir']
     create_dir(io_args['output_mask_dir'])
     create_dir(io_args['output_masked_frame_dir'])
@@ -127,7 +126,7 @@ def video_type_input_tracking(SegTracker, input_video, io_args, video_name, fram
     sam_gap = SegTracker.sam_gap
     frame_idx = 0
 
-    with torch.cuda.amp.autocast():
+    with torch.amp.autocast('cuda'):
         while cap.isOpened():
             ret, frame  = cap.read()  
             if not ret:
@@ -233,10 +232,9 @@ def img_seq_type_input_tracking(SegTracker, io_args, video_name, imgs_path, fps,
 
     # create dir to save predicted mask and masked frame
     if frame_num == 0:
-        if os.path.isdir(io_args['output_mask_dir']):
-            os.system(f"rm -r {io_args['output_mask_dir']}")
-        if os.path.isdir(io_args['output_masked_frame_dir']):
-            os.system(f"rm -r {io_args['output_masked_frame_dir']}")
+        # Clean previous outputs without noisy shell errors
+        shutil.rmtree(io_args['output_mask_dir'], ignore_errors=True)
+        shutil.rmtree(io_args['output_masked_frame_dir'], ignore_errors=True)
 
     output_mask_dir = io_args['output_mask_dir']
     create_dir(io_args['output_mask_dir'])
@@ -250,7 +248,7 @@ def img_seq_type_input_tracking(SegTracker, io_args, video_name, imgs_path, fps,
     sam_gap = SegTracker.sam_gap
     frame_idx = 0
 
-    with torch.cuda.amp.autocast():
+    with torch.amp.autocast('cuda'):
         for img_path in imgs_path:
             if i_frame_num > 0:
                 i_frame_num = i_frame_num - 1
@@ -324,8 +322,14 @@ def img_seq_type_input_tracking(SegTracker, io_args, video_name, imgs_path, fps,
     imageio.mimsave(io_args['output_gif'], masked_pred_list, fps=fps)
     print("{} saved".format(io_args['output_gif']))
 
-    # zip predicted mask
-    os.system(f"zip -r {io_args['tracking_result_dir']}/{video_name}_pred_mask.zip {io_args['output_mask_dir']}")
+    # zip predicted mask (stdlib, no shell)
+    zip_path = f"{io_args['tracking_result_dir']}/{video_name}_pred_mask.zip"
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for root, _, files in os.walk(io_args['output_mask_dir']):
+            for f in sorted(files):
+                full = os.path.join(root, f)
+                arc = os.path.relpath(full, io_args['tracking_result_dir'])
+                zf.write(full, arc)
 
     # manually release memory (after cuda out of memory)
     del SegTracker

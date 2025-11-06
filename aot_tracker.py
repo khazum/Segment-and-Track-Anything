@@ -27,6 +27,9 @@ class AOTTracker:
         # Build and load model
         self.model = build_vos_model(cfg.MODEL_VOS, cfg).to(self.device)
         self.model, _ = load_network(self.model, cfg.TEST_CKPT_PATH, gpu_id)
+        # Keep a canonical dtype to avoid float/half mismatches with DeAOT
+        # (many checkpoints run in fp16). We'll cast inputs/labels to this dtype.
+        self.param_dtype = next(self.model.parameters()).dtype
         self.engine = build_engine(cfg.MODEL_ENGINE,
                                    phase='eval',
                                    aot_model=self.model,
@@ -57,8 +60,8 @@ class AOTTracker:
         }
     
         sample = self.transform(sample)
-        frame_t = sample[0]['current_img'].unsqueeze(0).float().to(self.device)
-        mask_t = sample[0]['current_label'].unsqueeze(0).float().to(self.device)
+        frame_t = sample[0]['current_img'].unsqueeze(0).to(self.device, dtype=self.param_dtype)
+        mask_t = sample[0]['current_label'].unsqueeze(0).to(self.device, dtype=self.param_dtype)
         _mask = F.interpolate(mask_t, size=frame_t.shape[-2:], mode='nearest')
 
         if incremental:
@@ -75,16 +78,20 @@ class AOTTracker:
         output_height, output_width = image.shape[0], image.shape[1]
         sample = {'current_img': image}
         sample = self.transform(sample)
-        image_t = sample[0]['current_img'].unsqueeze(0).float().to(self.device)
+        # Use model dtype (fp16 on many checkpoints) to keep ops consistent
+        image_t = sample[0]['current_img'].unsqueeze(0).to(self.device, dtype=self.param_dtype)        
         self.engine.match_propogate_one_frame(image_t)
         pred_logit = self.engine.decode_current_logits((output_height, output_width))
-        pred_label = torch.argmax(pred_logit, dim=1, keepdim=True).float().cpu()
-        return  pred_label
+        # Cast argmax to model dtype; keep on device for immediate memory update.
+        pred_label = torch.argmax(pred_logit, dim=1, keepdim=True).to(self.param_dtype)
+        return pred_label
     
     @torch.no_grad()
     def update_memory(self, pred_label: torch.Tensor) -> None:
-        self.engine.update_memory(pred_label)
-    
+        # Engine expects same device/dtype as model params
+        pred_label = pred_label.to(device=self.device, dtype=self.param_dtype)
+        self.engine.update_memory(pred_label)    
+        
     @torch.no_grad()
     def restart(self) -> None:
         self.engine.restart_engine()

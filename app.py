@@ -1,6 +1,5 @@
 import gradio as gr
 import os
-import json
 from model_args import segtracker_args,sam_args,aot_args
 from SegTracker import SegTracker
 from tool.transfer_tools import draw_outline, draw_points
@@ -13,7 +12,7 @@ import gc
 import numpy as np
 from tool.transfer_tools import mask2bbox
 from ast_master.prepare import ASTpredict
-from moviepy.editor import VideoFileClip
+from moviepy.video.io import VideoFileClip
 import zipfile
 import shutil
 

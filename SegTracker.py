@@ -8,7 +8,7 @@ from tool.detector import Detector
 from tool.transfer_tools import draw_outline, draw_points
 import cv2
 from seg_track_anything import draw_mask
-
+from tool.ckpt_utils import load_state_dict_safely
 
 class SegTracker():
     def __init__(self,segtracker_args, sam_args, aot_args) -> None:
@@ -74,9 +74,6 @@ class SegTracker():
 
     def update_origin_merged_mask(self, updated_merged_mask):
         self.origin_merged_mask = updated_merged_mask
-        # obj_ids = np.unique(updated_merged_mask)
-        # obj_ids = obj_ids[obj_ids!=0]
-        # self.object_idx = int(max(obj_ids)) + 1
 
     def reset_origin_merged_mask(self, mask, id):
         self.origin_merged_mask = mask

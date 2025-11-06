@@ -12,11 +12,11 @@ class DeAOTEngine(AOTEngine):
                  gpu_id=0,
                  long_term_mem_gap=9999,
                  short_term_mem_skip=1,
-                 layer_loss_scaling_ratio=2.,
-                 max_len_long_term=9999):
+                 layer_loss_scaling_ratio=2.):
         super().__init__(aot_model, gpu_id, long_term_mem_gap,
-                         short_term_mem_skip, max_len_long_term)
+                         short_term_mem_skip)
         self.layer_loss_scaling_ratio = layer_loss_scaling_ratio
+
     def update_short_term_memory(self, curr_mask, curr_id_emb=None, skip_long_term_update=False):
 
         if curr_id_emb is None:
@@ -62,10 +62,10 @@ class DeAOTInferEngine(AOTInferEngine):
                  gpu_id=0,
                  long_term_mem_gap=9999,
                  short_term_mem_skip=1,
-                 max_aot_obj_num=None,
-                 max_len_long_term=9999):
+                 max_aot_obj_num=None):
         super().__init__(aot_model, gpu_id, long_term_mem_gap,
-                         short_term_mem_skip, max_aot_obj_num, max_len_long_term)
+                         short_term_mem_skip, max_aot_obj_num)
+
     def add_reference_frame(self, img, mask, obj_nums, frame_step=-1):
         if isinstance(obj_nums, list):
             obj_nums = obj_nums[0]
@@ -74,8 +74,7 @@ class DeAOTInferEngine(AOTInferEngine):
         while (aot_num > len(self.aot_engines)):
             new_engine = DeAOTEngine(self.AOT, self.gpu_id,
                                      self.long_term_mem_gap,
-                                     self.short_term_mem_skip,
-                                     max_len_long_term = self.max_len_long_term)
+                                     self.short_term_mem_skip)
             new_engine.eval()
             self.aot_engines.append(new_engine)
 
@@ -84,14 +83,11 @@ class DeAOTInferEngine(AOTInferEngine):
         img_embs = None
         for aot_engine, separated_mask, separated_obj_num in zip(
                 self.aot_engines, separated_masks, separated_obj_nums):
-            if aot_engine.obj_nums is None or aot_engine.obj_nums[0] < separated_obj_num:
-                aot_engine.add_reference_frame(img,
-                                            separated_mask,
-                                            obj_nums=[separated_obj_num],
-                                            frame_step=frame_step,
-                                            img_embs=img_embs)
-            else:
-                aot_engine.update_short_term_memory(separated_mask)
+            aot_engine.add_reference_frame(img,
+                                           separated_mask,
+                                           obj_nums=[separated_obj_num],
+                                           frame_step=frame_step,
+                                           img_embs=img_embs)
             if img_embs is None:  # reuse image embeddings
                 img_embs = aot_engine.curr_enc_embs
 

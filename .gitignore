@@ -1,15 +1,14 @@
 .vscode
 ckpt/*
+/assets
 assets/*masks
 assets/*mp4
 # assets/*zip
 assets/*gif
+/aot
+/ast_master
 *.pyc
 debug
 cym_utils
 /src
 /tracking_results
-/aot/results
-/aot/pretrain_models
-/aot/datasets
-/ast_master 

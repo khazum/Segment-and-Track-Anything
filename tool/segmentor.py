@@ -1,7 +1,6 @@
 import torch
-import cv2
 import numpy as np
-from sam.segment_anything import sam_model_registry, SamPredictor, SamAutomaticMaskGenerator
+from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 
 class Segmentor:
     def __init__(self, sam_args):
