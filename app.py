@@ -211,7 +211,7 @@ def init_SegTracker_Stroke(aot_model, long_term_mem, max_len_long_term, sam_gap,
     Seg_Tracker.restart_tracker()
     return Seg_Tracker, origin_frame, [[], []], origin_frame
 
-def undo_click_stack_and_refine_seg(Seg_Tracker, origin_frame, click_stack, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side):
+def undo_click_stack_and_refine_seg(Seg_Tracker, origin_frame, click_stack, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt=None, gd_ckpt=None):
     
     if Seg_Tracker is None:
         return Seg_Tracker, origin_frame, [[], []]
@@ -233,7 +233,7 @@ def undo_click_stack_and_refine_seg(Seg_Tracker, origin_frame, click_stack, aot_
     else:
         return Seg_Tracker, origin_frame, [[], []]
 
-def roll_back_undo_click_stack_and_refine_seg(Seg_Tracker, origin_frame, click_stack, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side,input_video, input_img_seq, frame_num, refine_idx):
+def roll_back_undo_click_stack_and_refine_seg(Seg_Tracker, origin_frame, click_stack, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, input_video, input_img_seq, frame_num, refine_idx, sam_ckpt=None, gd_ckpt=None):
     
     if Seg_Tracker is None:
         return Seg_Tracker, origin_frame, [[], []]
@@ -279,7 +279,7 @@ def seg_acc_click(Seg_Tracker, prompt, origin_frame):
 
     return masked_frame
 
-def sam_click(Seg_Tracker, origin_frame, point_mode, click_stack, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, evt:gr.SelectData):
+def sam_click(Seg_Tracker, origin_frame, point_mode, click_stack, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt=None, gd_ckpt=None, evt:gr.SelectData=None):
     """
     Args:
         origin_frame: nd.array
@@ -291,11 +291,15 @@ def sam_click(Seg_Tracker, origin_frame, point_mode, click_stack, aot_model, lon
     if point_mode == "Positive":
         point = {"coord": [evt.index[0], evt.index[1]], "mode": 1}
     else:
-        # TODO：add everything positive points
         point = {"coord": [evt.index[0], evt.index[1]], "mode": 0}
 
     if Seg_Tracker is None:
-        Seg_Tracker, _, _, _ = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame)
+        # If your init_SegTracker already supports the new args, pass them through:
+        try:
+            Seg_Tracker, _, _, _ = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame, sam_ckpt, gd_ckpt)
+        except TypeError:
+            # Backward-compat if init_SegTracker hasn't been expanded yet.
+            Seg_Tracker, _, _, _ = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame)
 
     # get click prompts for sam to predict mask
     click_prompt = get_click_prompt(click_stack, point)
@@ -305,7 +309,7 @@ def sam_click(Seg_Tracker, origin_frame, point_mode, click_stack, aot_model, lon
 
     return Seg_Tracker, masked_frame, click_stack
 
-def roll_back_sam_click(Seg_Tracker, origin_frame, point_mode, click_stack, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, input_video, input_img_seq, frame_num, refine_idx, evt:gr.SelectData):
+def roll_back_sam_click(Seg_Tracker, origin_frame, point_mode, click_stack, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, input_video, input_img_seq, frame_num, refine_idx, sam_ckpt=None, gd_ckpt=None, evt:gr.SelectData=None):
     """
     Args:
         origin_frame: nd.array
@@ -320,7 +324,10 @@ def roll_back_sam_click(Seg_Tracker, origin_frame, point_mode, click_stack, aot_
         point = {"coord": [evt.index[0], evt.index[1]], "mode": 0}
 
     if Seg_Tracker is None:
-        Seg_Tracker, _, _, _ = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame)
+        try:
+            Seg_Tracker, _, _, _ = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame, sam_ckpt, gd_ckpt)
+        except TypeError:
+            Seg_Tracker, _, _, _ = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame)
 
     # get click prompts for sam to predict mask
     prompt = get_click_prompt(click_stack, point)
@@ -374,7 +381,7 @@ def gd_detect(Seg_Tracker, origin_frame, grounding_caption, box_threshold, text_
 def segment_everything(Seg_Tracker, aot_model, long_term_mem, max_len_long_term, origin_frame, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt):
     
     if Seg_Tracker is None:
-        Seg_Tracker, _ , _, _ = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame)
+        Seg_Tracker, _ , _, _ = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame, sam_ckpt, gd_ckpt)
 
     print("Everything")
 
