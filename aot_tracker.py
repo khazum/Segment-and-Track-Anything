@@ -1,26 +1,21 @@
-from statistics import mode
 import torch
 import torch.nn.functional as F
-import os
 import sys
 sys.path.append("./aot")
 from aot.networks.engines.aot_engine import AOTEngine,AOTInferEngine
 from aot.networks.engines.deaot_engine import DeAOTEngine,DeAOTInferEngine
 import importlib
 import numpy as np
-from PIL import Image
-from skimage.morphology.binary import binary_dilation
-
-
-np.random.seed(200)
-_palette = ((np.random.random((3*255))*0.7+0.3)*255).astype(np.uint8).tolist()
-_palette = [0,0,0]+_palette
-
 import aot.dataloaders.video_transforms as tr
 from aot.utils.checkpoint import load_network
 from aot.networks.models import build_vos_model
 from aot.networks.engines import build_engine
 from torchvision import transforms
+
+np.random.seed(200)
+_palette = ((np.random.random((3*255))*0.7+0.3)*255).astype(np.uint8).tolist()
+_palette = [0,0,0]+_palette
+
 
 class AOTTracker(object):
     def __init__(self, cfg, gpu_id=0):

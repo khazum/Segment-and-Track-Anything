@@ -1,12 +1,12 @@
-import os, csv, argparse
+import os, csv
 import sys
-import torch, torchaudio, timm
+import torch, torchaudio
 import numpy as np
-from torch.cuda.amp import autocast
-import IPython
+from torch.amp import autocast
+from src.models import ASTModel
+
 current_directory = os.path.dirname(os.path.abspath(__file__))  
 sys.path.append(current_directory)  
-from src.models import ASTModel
 
 # Create a new class that inherits the original ASTModel class
 class ASTModelVis(ASTModel):
@@ -100,7 +100,7 @@ def ASTpredict():
 
     # Make the prediction
     with torch.no_grad():
-        with autocast():
+        with autocast('cuda'):
             output = audio_model.forward(feats_data)
             output = torch.sigmoid(output)
     result_output = output.data.cpu().numpy()[0]

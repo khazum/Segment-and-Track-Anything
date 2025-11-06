@@ -11,13 +11,11 @@ from tool.transfer_tools import draw_outline, draw_points
 
 import cv2
 from PIL import Image
-from skimage.morphology.binary import binary_dilation
 import torch
 import math
 from seg_track_anything import aot_model2ckpt, tracking_objects_in_video, draw_mask
 import gc
 import numpy as np
-import json
 from tool.transfer_tools import mask2bbox
 
 from ast_master.prepare import ASTpredict

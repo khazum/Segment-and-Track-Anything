@@ -1,6 +1,5 @@
 import os
 import cv2
-from model_args import segtracker_args,sam_args,aot_args
 from PIL import Image
 from aot_tracker import _palette
 import numpy as np
