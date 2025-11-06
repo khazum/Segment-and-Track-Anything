@@ -1,7 +1,6 @@
 .vscode
 ckpt/*
 assets
-aot
 ast_master
 *.pyc
 debug
