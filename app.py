@@ -1,11 +1,6 @@
-from PIL.ImageOps import colorize, scale
 import gradio as gr
-import importlib
-import sys
 import os
-import pdb
 import json
-from matplotlib.pyplot import step
 
 from model_args import segtracker_args,sam_args,aot_args
 from SegTracker import SegTracker
@@ -17,9 +12,8 @@ from tool.transfer_tools import draw_outline, draw_points
 import cv2
 from PIL import Image
 from skimage.morphology.binary import binary_dilation
-import argparse
 import torch
-import time, math
+import math
 from seg_track_anything import aot_model2ckpt, tracking_objects_in_video, draw_mask
 import gc
 import numpy as np
@@ -28,6 +22,7 @@ from tool.transfer_tools import mask2bbox
 
 from ast_master.prepare import ASTpredict
 from moviepy import VideoFileClip 
+
 def clean():
     return None, None, None, None, None, None, [[], []]
 
@@ -101,7 +96,7 @@ def get_meta_from_img_seq(input_img_seq):
     return first_frame, first_frame, first_frame, ""
 
 def SegTracker_add_first_frame(Seg_Tracker, origin_frame, predicted_mask):
-    with torch.cuda.amp.autocast():
+    with torch.amp.autocast('cuda'):
         # Reset the first frame's mask
         frame_idx = 0
         Seg_Tracker.restart_tracker()
@@ -324,7 +319,7 @@ def segment_everything(Seg_Tracker, aot_model, long_term_mem, max_len_long_term,
 
     frame_idx = 0
 
-    with torch.cuda.amp.autocast():
+    with torch.amp.autocast('cuda'):
         pred_mask = Seg_Tracker.seg(origin_frame)
         torch.cuda.empty_cache()
         gc.collect()
@@ -502,7 +497,7 @@ def seg_track_app():
 
         with gr.Row():
             # video input
-            with gr.Column(scale=0.5):
+            with gr.Column(scale=2):
 
                 tab_video_input = gr.Tab(label="Video type input")
                 with tab_video_input:
@@ -512,7 +507,7 @@ def seg_track_app():
                 with tab_img_seq_input:
                     with gr.Row():
                         input_img_seq = gr.File(label='Input Image-Seq', height=550)
-                        with gr.Column(scale=0.25):
+                        with gr.Column(scale=4):
                             extract_button = gr.Button(value="extract")
                             fps = gr.Slider(label='fps', minimum=5, maximum=50, value=8, step=1)
 
@@ -574,11 +569,11 @@ def seg_track_app():
                     detect_button = gr.Button(value="Detect")
                     with gr.Accordion("Advanced options", open=False):
                         with gr.Row():
-                            with gr.Column(scale=0.5):
+                            with gr.Column(scale=2):
                                 box_threshold = gr.Slider(
                                     label="Box Threshold", minimum=0.0, maximum=1.0, value=0.25, step=0.001
                                 )
-                            with gr.Column(scale=0.5):
+                            with gr.Column(scale=2):
                                 text_threshold = gr.Slider(
                                     label="Text Threshold", minimum=0.0, maximum=1.0, value=0.25, step=0.001
                                 )
@@ -592,7 +587,7 @@ def seg_track_app():
                     audio_grounding_button = gr.Button(value="ground the sound-making object", interactive=True)
 
                 with gr.Row():
-                    with gr.Column(scale=0.5): 
+                    with gr.Column(scale=2): 
                         with gr.Tab(label="SegTracker Args"):
                             # args for tracking in video do segment-everthing
                             points_per_side = gr.Slider(
@@ -651,7 +646,7 @@ def seg_track_app():
                                 interactive=True,
                                 )
 
-            with gr.Column(scale=0.5):
+            with gr.Column(scale=2):
                 # output_video = gr.Video(label='Output video', height=550)
                 output_video = gr.File(label="Predicted video")
                 output_mask = gr.File(label="Predicted masks")
@@ -1171,7 +1166,7 @@ def seg_track_app():
             )
     
     app.queue(default_concurrency_limit=1)
-    app.launch(server_name="0.0.0.0", server_port=7860, debug=True, share=True)
+    app.launch(server_name="localhost", server_port=12345, debug=True, share=True)
 
 
 if __name__ == "__main__":
