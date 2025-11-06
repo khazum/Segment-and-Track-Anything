@@ -1,5 +1,4 @@
 import os
-from typing import Iterable
 import cv2
 
 def images_to_video(img_dir: str, out_file: str, fps: int = 10) -> None:

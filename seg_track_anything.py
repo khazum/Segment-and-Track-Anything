@@ -1,20 +1,22 @@
 import os
+import shutil
+import zipfile
+import gc
+
 import cv2
-from PIL import Image
-from aot_tracker import _palette
+import imageio
 import numpy as np
 import torch
-import gc
-import imageio
+from PIL import Image
 from scipy.ndimage import binary_dilation
-import zipfile
-import shutil
 
-def save_prediction(pred_mask,output_dir,file_name):
+from aot_tracker import _palette
+
+def save_prediction(pred_mask, output_dir, file_name):
     save_mask = Image.fromarray(pred_mask.astype(np.uint8))
     save_mask = save_mask.convert(mode='P')
     save_mask.putpalette(_palette)
-    save_mask.save(os.path.join(output_dir,file_name))
+    save_mask.save(os.path.join(output_dir, file_name))
 
 def colorize_mask(pred_mask):
     save_mask = Image.fromarray(pred_mask.astype(np.uint8))
@@ -43,14 +45,14 @@ def draw_mask(img, mask, alpha=0.5, id_countour=False):
             # Compose image
             img_mask[binary_mask] = foreground[binary_mask]
 
-            countours = binary_dilation(binary_mask,iterations=1) ^ binary_mask
+            countours = binary_dilation(binary_mask, iterations=1) ^ binary_mask
             img_mask[countours, :] = 0
     else:
         binary_mask = (mask!=0)
-        countours = binary_dilation(binary_mask,iterations=1) ^ binary_mask
-        foreground = img*(1-alpha)+colorize_mask(mask)*alpha
+        countours = binary_dilation(binary_mask, iterations=1) ^ binary_mask
+        foreground = img * (1 - alpha) + colorize_mask(mask) * alpha
         img_mask[binary_mask] = foreground[binary_mask]
-        img_mask[countours,:] = 0
+        img_mask[countours, :] = 0
         
     return img_mask.astype(img.dtype)
 
@@ -63,6 +65,15 @@ aot_model2ckpt = {
     "r50_deaotl": "./ckpt/R50_DeAOTL_PRE_YTB_DAV.pth",
 }
 
+def _zip_directory(base_dir: str, rel_dir: str, out_zip_path: str) -> None:
+    """Zip the contents of ``rel_dir`` (relative to ``base_dir``) into ``out_zip_path``."""
+    with zipfile.ZipFile(out_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        root_dir = os.path.join(base_dir, rel_dir)
+        for root, _, files in os.walk(root_dir):
+            for f in sorted(files):
+                full = os.path.join(root, f)
+                arc = os.path.relpath(full, base_dir)
+                zf.write(full, arc)
 
 def tracking_objects_in_video(SegTracker, input_video, input_img_seq, fps, frame_num=0):
     
@@ -172,7 +183,7 @@ def video_type_input_tracking(SegTracker, input_video, io_args, video_name, fram
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    fourcc =  cv2.VideoWriter_fourcc(*"mp4v")
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
 
     out = cv2.VideoWriter(io_args['output_video'], fourcc, fps, (width, height))
 
@@ -203,12 +214,8 @@ def video_type_input_tracking(SegTracker, input_video, io_args, video_name, fram
 
     # zip predicted mask
     zip_path = f"{io_args['tracking_result_dir']}/{video_name}_pred_mask.zip"
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for root, _, files in os.walk(io_args['output_mask_dir']):
-            for f in sorted(files):
-                full = os.path.join(root, f)
-                arc = os.path.relpath(full, io_args['tracking_result_dir'])
-                zf.write(full, arc)
+    _zip_directory(io_args['tracking_result_dir'], f"{video_name}_masks", zip_path)
+
                 
     # manually release memory (after cuda out of memory)
     del SegTracker
@@ -291,7 +298,7 @@ def img_seq_type_input_tracking(SegTracker, io_args, video_name, imgs_path, fps,
 
     # draw pred mask on frame and save as a video
     height, width = pred_list[0].shape
-    fourcc =  cv2.VideoWriter_fourcc(*"mp4v")
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     i_frame_num =frame_num 
 
     out = cv2.VideoWriter(io_args['output_video'], fourcc, fps, (width, height))
@@ -324,17 +331,11 @@ def img_seq_type_input_tracking(SegTracker, io_args, video_name, imgs_path, fps,
 
     # zip predicted mask (stdlib, no shell)
     zip_path = f"{io_args['tracking_result_dir']}/{video_name}_pred_mask.zip"
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for root, _, files in os.walk(io_args['output_mask_dir']):
-            for f in sorted(files):
-                full = os.path.join(root, f)
-                arc = os.path.relpath(full, io_args['tracking_result_dir'])
-                zf.write(full, arc)
+    _zip_directory(io_args['tracking_result_dir'], f"{video_name}_masks", zip_path)
 
     # manually release memory (after cuda out of memory)
     del SegTracker
     torch.cuda.empty_cache()
     gc.collect()
-
 
     return io_args['output_video'], f"{io_args['tracking_result_dir']}/{video_name}_pred_mask.zip"

@@ -1,20 +1,18 @@
 import sys
 sys.path.append("..")
 sys.path.append("./sam")
-from aot_tracker import get_aot
-import numpy as np
-from tool.segmentor import Segmentor
-from tool.detector import Detector
-from tool.transfer_tools import draw_outline, draw_points
 import cv2
-from seg_track_anything import draw_mask
-from tool.ckpt_utils import load_state_dict_safely
+import numpy as np
 
-class SegTracker():
-    def __init__(self,segtracker_args, sam_args, aot_args) -> None:
-        """
-         Initialize SAM and AOT.
-        """
+from aot_tracker import get_aot
+from seg_track_anything import draw_mask
+from tool.detector import Detector
+from tool.segmentor import Segmentor
+from tool.transfer_tools import draw_outline, draw_points
+
+class SegTracker:
+    def __init__(self, segtracker_args, sam_args, aot_args) -> None:
+        """Initialize SAM (segmentor), AOT tracker, and detector with runtime args."""
         self.sam = Segmentor(sam_args)
         self.tracker = get_aot(aot_args)
         self.detector = Detector(self.sam.device)
@@ -33,7 +31,7 @@ class SegTracker():
         self.everything_labels = []
         print("SegTracker has been initialized")
 
-    def seg(self,frame):
+    def seg(self, frame):
         '''
         Arguments:
             frame: numpy array (h,w,3)
@@ -48,7 +46,7 @@ class SegTracker():
             return
         # merge all predictions into one mask (h,w)
         # note that the merged mask may lost some objects due to the overlapping
-        self.origin_merged_mask = np.zeros(anns[0]['segmentation'].shape,dtype=np.uint8)
+        self.origin_merged_mask = np.zeros(anns[0]['segmentation'].shape, dtype=np.uint8)
         idx = 1
         for ann in anns:
             if ann['area'] > self.min_area:
@@ -59,14 +57,14 @@ class SegTracker():
                 self.everything_labels.append(1)
 
         obj_ids = np.unique(self.origin_merged_mask)
-        obj_ids = obj_ids[obj_ids!=0]
+        obj_ids = obj_ids[obj_ids != 0]
 
         self.object_idx = 1
         for id in obj_ids:
-            if np.sum(self.origin_merged_mask==id) < self.min_area or self.object_idx > self.max_obj_num:
-                self.origin_merged_mask[self.origin_merged_mask==id] = 0
+            if np.sum(self.origin_merged_mask == id) < self.min_area or self.object_idx > self.max_obj_num:
+                self.origin_merged_mask[self.origin_merged_mask == id] = 0
             else:
-                self.origin_merged_mask[self.origin_merged_mask==id] = self.object_idx
+                self.origin_merged_mask[self.origin_merged_mask == id] = self.object_idx
                 self.object_idx += 1
 
         self.first_frame_mask = self.origin_merged_mask
@@ -108,7 +106,7 @@ class SegTracker():
         for ref in self.reference_objs_list:
             objs.update(set(ref))
         objs = list(sorted(list(objs)))
-        objs = [i for i in objs if i!=0]
+        objs = [i for i in objs if i != 0]
         return objs
     
     def get_obj_num(self):
@@ -127,7 +125,7 @@ class SegTracker():
         '''
         new_obj_mask = (track_mask==0) * seg_mask
         new_obj_ids = np.unique(new_obj_mask)
-        new_obj_ids = new_obj_ids[new_obj_ids!=0]
+        new_obj_ids = new_obj_ids[new_obj_ids !=0 ]
         # obj_num = self.get_obj_num() + 1
         obj_num = self.curr_idx
         for idx in new_obj_ids:
@@ -205,7 +203,7 @@ class SegTracker():
             refined_merged_mask: numpy array (h, w)
         '''
         if self.origin_merged_mask is None:
-            self.origin_merged_mask = np.zeros(interactive_mask.shape,dtype=np.uint8)
+            self.origin_merged_mask = np.zeros(interactive_mask.shape, dtype=np.uint8)
 
         refined_merged_mask = self.origin_merged_mask.copy()
         refined_merged_mask[interactive_mask > 0] = self.curr_idx

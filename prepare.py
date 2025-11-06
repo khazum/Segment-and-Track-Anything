@@ -5,7 +5,7 @@ import torch
 import torchaudio
 import numpy as np
 from torch.amp import autocast
-from src.models import ASTModel
+from ast_master.src.models import ASTModel
 
 current_directory = os.path.dirname(os.path.abspath(__file__))  
 sys.path.append(current_directory)  

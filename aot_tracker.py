@@ -1,17 +1,19 @@
+import sys
+from typing import List, Union
+
+import numpy as np
 import torch
 import torch.nn.functional as F
-import sys
-from typing import List, Tuple, Union, Optional, Dict, Any
+from torchvision import transforms
+
 sys.path.append("./aot")  # keep for local package resolution
-from aot.networks.engines.aot_engine import AOTEngine,AOTInferEngine
-from aot.networks.engines.deaot_engine import DeAOTEngine,DeAOTInferEngine
+from aot.networks.engines.aot_engine import AOTEngine, AOTInferEngine
+from aot.networks.engines.deaot_engine import DeAOTEngine, DeAOTInferEngine
 import importlib
-import numpy as np
 import aot.dataloaders.video_transforms as tr
 from aot.utils.checkpoint import load_network
 from aot.networks.models import build_vos_model
 from aot.networks.engines import build_engine
-from torchvision import transforms
 
 np.random.seed(200)
 _palette = ((np.random.random((3 * 255)) * 0.7 + 0.3) * 255).astype(np.uint8).tolist()
@@ -47,13 +49,23 @@ class AOTTracker:
         self.model.eval()
 
     @torch.no_grad()
-    def add_reference_frame(self,
-                            frame: np.ndarray,
-                            mask: np.ndarray,
-                            obj_nums: Union[int, List[int]],
-                            frame_step: int,
-                            incremental: bool = False) -> None:        
-        # mask = cv2.resize(mask, frame.shape[:2][::-1], interpolation = cv2.INTER_NEAREST)
+    def add_reference_frame(
+        self,
+        frame: np.ndarray,
+        mask: np.ndarray,
+        obj_nums: Union[int, List[int]],
+        frame_step: int,
+        incremental: bool = False,
+    ) -> None:
+        """Add a labeled reference frame to memory.
+
+        Args:
+            frame: HxWx3 RGB frame (np.uint8).
+            mask:  HxW label map where 0 is background.
+            obj_nums: Number of objects (or list with single int for legacy API).
+            frame_step: Absolute frame index or step used by the engine.
+            incremental: If True, grow object set without re-encoding image.
+        """
         sample = {
             'current_img': frame,
             'current_label': mask,
@@ -73,8 +85,7 @@ class AOTTracker:
 
     @torch.no_grad()
     def track(self, image: np.ndarray) -> torch.Tensor:
-        """Track objects for a single frame and return the label map tensor on CPU."""
-        output_height, output_width = image.shape[0], image.shape[1]
+        """Track objects for a single frame and return the predicted label map tensor."""
         output_height, output_width = image.shape[0], image.shape[1]
         sample = {'current_img': image}
         sample = self.transform(sample)
@@ -88,33 +99,36 @@ class AOTTracker:
     
     @torch.no_grad()
     def update_memory(self, pred_label: torch.Tensor) -> None:
+        """Update internal memory with the provided label map."""
         # Engine expects same device/dtype as model params
         pred_label = pred_label.to(device=self.device, dtype=self.param_dtype)
         self.engine.update_memory(pred_label)    
         
     @torch.no_grad()
     def restart(self) -> None:
+        """Clear state/memory in the underlying engine."""
         self.engine.restart_engine()
     
     @torch.no_grad()
     def build_tracker_engine(self, name: str, **kwargs):
+        """Factory for tracker infer engines by name."""
         if name == 'aotengine':
             return AOTTrackerInferEngine(**kwargs)
-        elif name == 'deaotengine':
+        if name == 'deaotengine':
             return DeAOTTrackerInferEngine(**kwargs)
-        else:
-            raise NotImplementedError
+        raise ValueError(f"Unknown engine '{name}'. Expected 'aotengine' or 'deaotengine'.")
 
 
 class AOTTrackerInferEngine(AOTInferEngine):
     def __init__(self, aot_model, gpu_id=0, long_term_mem_gap=9999, short_term_mem_skip=1, max_aot_obj_num=None):
         super().__init__(aot_model, gpu_id, long_term_mem_gap, short_term_mem_skip, max_aot_obj_num)
+
     def add_reference_frame_incremental(self, img, mask, obj_nums, frame_step: int = -1):
         if isinstance(obj_nums, list):
             obj_nums = obj_nums[0]
         self.obj_nums = obj_nums
         aot_num = max(np.ceil(obj_nums / self.max_aot_obj_num), 1)
-        while (aot_num > len(self.aot_engines)):
+        while aot_num > len(self.aot_engines):
             new_engine = AOTEngine(self.AOT, self.gpu_id,
                                    self.long_term_mem_gap,
                                    self.short_term_mem_skip)
@@ -145,12 +159,13 @@ class AOTTrackerInferEngine(AOTInferEngine):
 class DeAOTTrackerInferEngine(DeAOTInferEngine):
     def __init__(self, aot_model, gpu_id=0, long_term_mem_gap=9999, short_term_mem_skip=1, max_aot_obj_num=None):
         super().__init__(aot_model, gpu_id, long_term_mem_gap, short_term_mem_skip, max_aot_obj_num)
+
     def add_reference_frame_incremental(self, img, mask, obj_nums, frame_step=-1):
         if isinstance(obj_nums, list):
             obj_nums = obj_nums[0]
         self.obj_nums = obj_nums
         aot_num = max(np.ceil(obj_nums / self.max_aot_obj_num), 1)
-        while (aot_num > len(self.aot_engines)):
+        while aot_num > len(self.aot_engines):
             new_engine = DeAOTEngine(self.AOT, self.gpu_id,
                                    self.long_term_mem_gap,
                                    self.short_term_mem_skip)
@@ -178,16 +193,14 @@ class DeAOTTrackerInferEngine(DeAOTInferEngine):
 
 
 def get_aot(args):
-    """Factory for AOTTracker from simple args dict.
+    """Factory for :class:`AOTTracker` from a simple args dict.
 
-    Expected keys: phase, model, model_path, long_term_mem_gap, max_len_long_term, gpu_id
+    Expected keys: ``phase``, ``model``, ``model_path``, ``long_term_mem_gap``,
+    ``max_len_long_term``, ``gpu_id``.
     """
-    # build vos engine
     engine_config = importlib.import_module('configs.' + 'pre_ytb_dav')
     cfg = engine_config.EngineConfig(args['phase'], args['model'])
     cfg.TEST_CKPT_PATH = args['model_path']
     cfg.TEST_LONG_TERM_MEM_GAP = args['long_term_mem_gap']
     cfg.MAX_LEN_LONG_TERM = args['max_len_long_term']
-    # init AOTTracker
-    tracker = AOTTracker(cfg, args['gpu_id'])
-    return tracker
+    return AOTTracker(cfg, args['gpu_id'])

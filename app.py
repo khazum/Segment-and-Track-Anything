@@ -1,5 +1,5 @@
-import gradio as gr
 import os
+import gradio as gr
 from model_args import segtracker_args,sam_args,aot_args
 from SegTracker import SegTracker
 from tool.transfer_tools import draw_outline, draw_points
@@ -16,7 +16,11 @@ from moviepy.video.io import VideoFileClip
 import zipfile
 import shutil
 
+# Common image filename extensions accepted by the app.
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp")
+
 def clean():
+    """Reset UI state for a new input."""
     return None, None, None, None, None, None, [[], []]
 
 def audio_to_text(input_video, label_num, threshold):
@@ -57,11 +61,13 @@ def get_meta_from_video(input_video):
     print("get meta information of input video")
     cap = cv2.VideoCapture(input_video)
     
-    _, first_frame = cap.read()
-    cap.release()
-
+    try:
+        ok, first_frame = cap.read()
+    finally:
+        cap.release()
+    if not ok or first_frame is None:
+        return None, None, None, ""
     first_frame = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
-
     return first_frame, first_frame, first_frame, ""
 
 def get_meta_from_img_seq(input_img_seq):
@@ -79,22 +85,23 @@ def get_meta_from_img_seq(input_img_seq):
     with zipfile.ZipFile(input_img_seq.name, 'r') as zf:
         zf.extractall(file_path)
 
-    imgs_path = sorted([
-        os.path.join(file_path, img_name)
-        for img_name in os.listdir(file_path)
-        if img_name.lower().endswith((".png", ".jpg", ".jpeg", ".bmp"))
-    ])
+    imgs_path = sorted(
+        os.path.join(file_path, n)
+        for n in os.listdir(file_path)
+        if n.lower().endswith(IMAGE_EXTS)
+    )
     if not imgs_path:
         return None, None, None, ""
 
-    first_frame = imgs_path[0]
-    first_frame = cv2.imread(first_frame)
+    first_frame = cv2.imread(imgs_path[0])
     first_frame = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
 
     return first_frame, first_frame, first_frame, ""
 
 def SegTracker_add_first_frame(Seg_Tracker, origin_frame, predicted_mask):
-    with torch.amp.autocast('cuda'):
+    # Use autocast on CUDA if available for speed, otherwise no-op.
+    device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
+    with torch.amp.autocast(device_type):
         # Reset the first frame's mask
         frame_idx = 0
         Seg_Tracker.restart_tracker()
@@ -349,29 +356,50 @@ def res_by_num(input_video, input_img_seq, frame_num):
         video_name = os.path.basename(input_video).split('.')[0]
 
         cap = cv2.VideoCapture(input_video)
-        for i in range(0,frame_num+1):
-            _, ori_frame = cap.read()  
-        cap.release()
+        try:
+            ori_frame = None
+            for _ in range(0, frame_num + 1):
+                ok, ori_frame = cap.read()
+                if not ok:
+                    break
+        finally:
+            cap.release()
+        if ori_frame is None:
+            return None, None, None
         ori_frame = cv2.cvtColor(ori_frame, cv2.COLOR_BGR2RGB)
     elif input_img_seq is not None:
-        file_name = input_img_seq.name.split('/')[-1].split('.')[0]
+        file_name = os.path.splitext(os.path.basename(input_img_seq.name))[0]
         file_path = os.path.join('./assets', file_name)
         video_name = file_name
-
-        imgs_path = sorted([os.path.join(file_path, img_name) for img_name in os.listdir(file_path)])
-        ori_frame = imgs_path[frame_num]
-        ori_frame = cv2.imread(ori_frame)
+        imgs_path = sorted(
+            os.path.join(file_path, n)
+            for n in os.listdir(file_path)
+            if n.lower().endswith(IMAGE_EXTS)
+        )
+        if frame_num >= len(imgs_path):
+            return None, None, None
+        ori_frame = cv2.imread(imgs_path[frame_num])
         ori_frame = cv2.cvtColor(ori_frame, cv2.COLOR_BGR2RGB)
     else:
         return None, None, None
 
     tracking_result_dir = f'{os.path.join(os.path.dirname(__file__), "tracking_results", f"{video_name}")}'
     output_masked_frame_dir = f'{tracking_result_dir}/{video_name}_masked_frames'
-    output_masked_frame_path = sorted([os.path.join(output_masked_frame_dir, img_name) for img_name in os.listdir(output_masked_frame_dir)])
-
+    if not os.path.isdir(output_masked_frame_dir):
+        return None, None, None
+    output_masked_frame_path = sorted(
+        os.path.join(output_masked_frame_dir, n)
+        for n in os.listdir(output_masked_frame_dir)
+        if n.lower().endswith(IMAGE_EXTS)
+    )
     output_mask_dir = f'{tracking_result_dir}/{video_name}_masks'
-    output_mask_path = sorted([os.path.join(output_mask_dir, img_name) for img_name in os.listdir(output_mask_dir)])
-
+    if not os.path.isdir(output_mask_dir):
+        return None, None, None
+    output_mask_path = sorted(
+        os.path.join(output_mask_dir, n)
+        for n in os.listdir(output_mask_dir)
+        if n.lower().endswith(IMAGE_EXTS)
+    )
 
     if len(output_masked_frame_path) == 0:
         return None, None, None
@@ -379,19 +407,12 @@ def res_by_num(input_video, input_img_seq, frame_num):
         if frame_num >= len(output_masked_frame_path):
             print("num out of frames range")
             return None, None, None
-        else:
-            print("choose", frame_num, "to refine")
-            chosen_frame_show = output_masked_frame_path[frame_num]
-            chosen_frame_show = cv2.imread(chosen_frame_show)
-            chosen_frame_show = cv2.cvtColor(chosen_frame_show, cv2.COLOR_BGR2RGB)
-
-            chosen_mask = output_mask_path[frame_num]
-            chosen_mask = cv2.imread(chosen_mask)
-
-            chosen_mask = Image.open(output_mask_path[frame_num]).convert('P')
-            chosen_mask = np.array(chosen_mask)
-
-            return chosen_frame_show, chosen_mask, ori_frame
+        print("choose", frame_num, "to refine")
+        chosen_frame_show = cv2.imread(output_masked_frame_path[frame_num])
+        chosen_frame_show = cv2.cvtColor(chosen_frame_show, cv2.COLOR_BGR2RGB)
+        # Mask saved as palette image; preserve ids by using PIL 'P' mode.
+        chosen_mask = np.array(Image.open(output_mask_path[frame_num]).convert('P'))
+        return chosen_frame_show, chosen_mask, ori_frame
 
 def show_res_by_slider(input_video, input_img_seq, frame_per):
     if input_video is not None:
@@ -413,8 +434,8 @@ def show_res_by_slider(input_video, input_img_seq, frame_per):
         return None, None
     else:
         frame_num = math.floor(total_frames_num * frame_per / 100)
-        if frame_per == 100:
-            frame_num = frame_num -1
+        if frame_per == 100 and frame_num > 0:
+            frame_num = frame_num - 1
         chosen_frame_show, _, _ = res_by_num(input_video, input_img_seq, frame_num)
         return chosen_frame_show, frame_num
 
