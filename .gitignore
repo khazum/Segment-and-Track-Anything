@@ -1,14 +1,9 @@
 .vscode
 ckpt/*
-/assets
-assets/*masks
-assets/*mp4
-# assets/*zip
-assets/*gif
-/aot
-/ast_master
+assets
+aot
+ast_master
 *.pyc
 debug
 cym_utils
-/src
-/tracking_results
+tracking_results
