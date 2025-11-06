@@ -1,14 +1,9 @@
 import gradio as gr
 import os
 import json
-
 from model_args import segtracker_args,sam_args,aot_args
 from SegTracker import SegTracker
 from tool.transfer_tools import draw_outline, draw_points
-# sys.path.append('.') 
-# sys.path.append('..')
-
-
 import cv2
 from PIL import Image
 import torch
@@ -17,32 +12,30 @@ from seg_track_anything import aot_model2ckpt, tracking_objects_in_video, draw_m
 import gc
 import numpy as np
 from tool.transfer_tools import mask2bbox
-
 from ast_master.prepare import ASTpredict
-from moviepy import VideoFileClip 
+from moviepy.editor import VideoFileClip
+import zipfile
+import shutil
 
 def clean():
     return None, None, None, None, None, None, [[], []]
 
 def audio_to_text(input_video, label_num, threshold):
-    video = VideoFileClip(input_video)      
-    audio = video.audio      
-    video_without_audio = video.set_audio(None)      
-    video_without_audio.write_videofile("video_without_audio.mp4")        
-    audio.write_audiofile("audio.flac", codec="flac") 
+    # Extract audio track and run AST prediction
+    with VideoFileClip(input_video) as video:
+        audio = video.audio
+        video_without_audio = video.set_audio(None)
+        video_without_audio.write_videofile("video_without_audio.mp4")
+        audio.write_audiofile("audio.flac", codec="flac") 
     top_labels,top_labels_probs = ASTpredict()
-    top_labels_and_probs = "{"  
-    predicted_texts = ""
-    for k in range(10):
-        if(k<label_num and top_labels_probs[k]>threshold):
-                top_labels_and_probs += f"\"{top_labels[k]}\": {top_labels_probs[k]:.4f},"
-                predicted_texts +=top_labels[k]+ ' '
-        k+=1
-    top_labels_and_probs = top_labels_and_probs[:-1]
-    top_labels_and_probs += "}"
-    top_labels_and_probs_dic = json.loads(top_labels_and_probs)
-    print(top_labels_and_probs_dic) 
-    return predicted_texts, top_labels_and_probs_dic
+    # Build the (label -> prob) mapping and concatenated text
+    kept = {
+        str(top_labels[k]): float(top_labels_probs[k])
+        for k in range(10)
+        if k < label_num and float(top_labels_probs[k]) > float(threshold)
+    }
+    predicted_texts = " ".join(kept.keys())
+    return predicted_texts, kept
 
 def get_click_prompt(click_stack, point):
 
@@ -77,16 +70,24 @@ def get_meta_from_img_seq(input_img_seq):
         return None, None, None, ""
 
     print("get meta information of img seq")
-    # Create dir
-    file_name = input_img_seq.name.split('/')[-1].split('.')[0]
-    file_path = f'./assets/{file_name}'
+    # Prepare extraction dir
+    file_name = os.path.splitext(os.path.basename(input_img_seq.name))[0]
+    file_path = os.path.join('./assets', file_name)
     if os.path.isdir(file_path):
-        os.system(f'rm -r {file_path}')
-    os.makedirs(file_path)
-    # Unzip file
-    os.system(f'unzip {input_img_seq.name} -d ./assets ')
-    
-    imgs_path = sorted([os.path.join(file_path, img_name) for img_name in os.listdir(file_path)])
+        shutil.rmtree(file_path)
+    os.makedirs(file_path, exist_ok=True)
+    # Unzip using Python stdlib for portability/safety
+    with zipfile.ZipFile(input_img_seq.name, 'r') as zf:
+        zf.extractall(file_path)
+
+    imgs_path = sorted([
+        os.path.join(file_path, img_name)
+        for img_name in os.listdir(file_path)
+        if img_name.lower().endswith((".png", ".jpg", ".jpeg", ".bmp"))
+    ])
+    if not imgs_path:
+        return None, None, None, ""
+
     first_frame = imgs_path[0]
     first_frame = cv2.imread(first_frame)
     first_frame = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
@@ -340,9 +341,7 @@ def add_new_object(Seg_Tracker):
 
 def tracking_objects(Seg_Tracker, input_video, input_img_seq, fps, frame_num=0):
     print("Start tracking !")
-    # pdb.set_trace()
-    # output_video, output_mask=tracking_objects_in_video(Seg_Tracker, input_video, input_img_seq, fps)
-    # pdb.set_trace()
+    # Start actual tracking pipeline
     return tracking_objects_in_video(Seg_Tracker, input_video, input_img_seq, fps, frame_num)
 
 
@@ -357,7 +356,7 @@ def res_by_num(input_video, input_img_seq, frame_num):
         ori_frame = cv2.cvtColor(ori_frame, cv2.COLOR_BGR2RGB)
     elif input_img_seq is not None:
         file_name = input_img_seq.name.split('/')[-1].split('.')[0]
-        file_path = f'./assets/{file_name}'
+        file_path = os.path.join('./assets', file_name)
         video_name = file_name
 
         imgs_path = sorted([os.path.join(file_path, img_name) for img_name in os.listdir(file_path)])
@@ -438,17 +437,6 @@ def show_chosen_idx_to_refine(aot_model, long_term_mem, max_len_long_term, sam_g
     if Seg_Tracker is None:
         print("reset aot args, new SegTracker")
         Seg_Tracker, _ , _, _ = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, ori_frame)
-    # # reset aot args
-    # aot_args["model"] = aot_model
-    # aot_args["model_path"] = aot_model2ckpt[aot_model]
-    # aot_args["long_term_mem_gap"] = long_term_mem
-    # aot_args["max_len_long_term"] = max_len_long_term
-    # # reset sam args
-    # segtracker_args["sam_gap"] = sam_gap
-    # segtracker_args["max_obj_num"] = max_obj_num
-    # sam_args["generator_args"]["points_per_side"] = points_per_side
-    
-    # Seg_Tracker = SegTracker(segtracker_args, sam_args, aot_args)
     Seg_Tracker.restart_tracker()
     Seg_Tracker.curr_idx = 1
     Seg_Tracker.object_idx = 1

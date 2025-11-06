@@ -7,6 +7,7 @@ import torch
 import gc
 import imageio
 from scipy.ndimage import binary_dilation
+import zipfile
 
 def save_prediction(pred_mask,output_dir,file_name):
     save_mask = Image.fromarray(pred_mask.astype(np.uint8))
@@ -23,7 +24,7 @@ def colorize_mask(pred_mask):
 
 def draw_mask(img, mask, alpha=0.5, id_countour=False):
     img_mask = np.zeros_like(img)
-    img_mask = img
+    img_mask = img.copy()
     if id_countour:
         # very slow ~ 1s per image
         obj_ids = np.unique(mask)
@@ -53,18 +54,11 @@ def draw_mask(img, mask, alpha=0.5, id_countour=False):
     return img_mask.astype(img.dtype)
 
 def create_dir(dir_path):
-    # if os.path.isdir(dir_path):
-    #     os.system(f"rm -r {dir_path}")
+    os.makedirs(dir_path, exist_ok=True)
     
-    # os.makedirs(dir_path)
-    if not os.path.isdir(dir_path):
-        os.makedirs(dir_path)
-    
-
-
 aot_model2ckpt = {
     "deaotb": "./ckpt/DeAOTB_PRE_YTB_DAV.pth",
-    "deaotl": "./ckpt/DeAOTL_PRE_YTB_DAV",
+    "deaotl": "./ckpt/DeAOTL_PRE_YTB_DAV.pth",
     "r50_deaotl": "./ckpt/R50_DeAOTL_PRE_YTB_DAV.pth",
 }
 
@@ -174,22 +168,13 @@ def video_type_input_tracking(SegTracker, input_video, io_args, video_name, fram
 
     # draw pred mask on frame and save as a video
     cap = cv2.VideoCapture(input_video)
-    # if frame_num > 0:
-    #     for i in range(0, frame_num):
-    #         cap.read()  
+
     fps = cap.get(cv2.CAP_PROP_FPS)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     fourcc =  cv2.VideoWriter_fourcc(*"mp4v")
-    # if input_video[-3:]=='mp4':
-    #     fourcc =  cv2.VideoWriter_fourcc(*"mp4v")
-    # elif input_video[-3:] == 'avi':
-    #     fourcc =  cv2.VideoWriter_fourcc(*"MJPG")
-    #     # fourcc = cv2.VideoWriter_fourcc(*"XVID")
-    # else:
-    #     fourcc = int(cap.get(cv2.CAP_PROP_FOURCC))
+
     out = cv2.VideoWriter(io_args['output_video'], fourcc, fps, (width, height))
 
     frame_idx = 0
@@ -218,8 +203,14 @@ def video_type_input_tracking(SegTracker, input_video, io_args, video_name, fram
     print("{} saved".format(io_args['output_gif']))
 
     # zip predicted mask
-    os.system(f"zip -r {io_args['tracking_result_dir']}/{video_name}_pred_mask.zip {io_args['output_mask_dir']}")
-
+    zip_path = f"{io_args['tracking_result_dir']}/{video_name}_pred_mask.zip"
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for root, _, files in os.walk(io_args['output_mask_dir']):
+            for f in sorted(files):
+                full = os.path.join(root, f)
+                arc = os.path.relpath(full, io_args['tracking_result_dir'])
+                zf.write(full, arc)
+                
     # manually release memory (after cuda out of memory)
     del SegTracker
     torch.cuda.empty_cache()

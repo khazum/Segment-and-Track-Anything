@@ -1,7 +1,8 @@
 import torch
 import torch.nn.functional as F
 import sys
-sys.path.append("./aot")
+from typing import List, Tuple, Union, Optional, Dict, Any
+sys.path.append("./aot")  # keep for local package resolution
 from aot.networks.engines.aot_engine import AOTEngine,AOTInferEngine
 from aot.networks.engines.deaot_engine import DeAOTEngine,DeAOTInferEngine
 import importlib
@@ -13,20 +14,19 @@ from aot.networks.engines import build_engine
 from torchvision import transforms
 
 np.random.seed(200)
-_palette = ((np.random.random((3*255))*0.7+0.3)*255).astype(np.uint8).tolist()
+_palette = ((np.random.random((3 * 255)) * 0.7 + 0.3) * 255).astype(np.uint8).tolist()
 _palette = [0,0,0]+_palette
 
 
-class AOTTracker(object):
-    def __init__(self, cfg, gpu_id=0):
-        self.gpu_id = gpu_id
-        self.model = build_vos_model(cfg.MODEL_VOS, cfg).cuda(gpu_id)
+class AOTTracker:
+    """Thin wrapper around AOT/DeAOT engines with consistent transforms and APIs."""
+
+    def __init__(self, cfg, gpu_id: int = 0):
+        self.gpu_id: int = gpu_id
+        self.device = torch.device(f"cuda:{gpu_id}" if torch.cuda.is_available() else "cpu")
+        # Build and load model
+        self.model = build_vos_model(cfg.MODEL_VOS, cfg).to(self.device)
         self.model, _ = load_network(self.model, cfg.TEST_CKPT_PATH, gpu_id)
-        # self.engine = self.build_tracker_engine(cfg.MODEL_ENGINE,
-        #                            aot_model=self.model,
-        #                            gpu_id=gpu_id,
-        #                            short_term_mem_skip=4,
-        #                            long_term_mem_gap=cfg.TEST_LONG_TERM_MEM_GAP)
         self.engine = build_engine(cfg.MODEL_ENGINE,
                                    phase='eval',
                                    aot_model=self.model,
@@ -34,7 +34,6 @@ class AOTTracker(object):
                                    short_term_mem_skip=1,
                                    long_term_mem_gap=cfg.TEST_LONG_TERM_MEM_GAP,
                                    max_len_long_term=cfg.MAX_LEN_LONG_TERM)
-       
         self.transform = transforms.Compose([
             tr.MultiRestrictSize(cfg.TEST_MAX_SHORT_EDGE,
                                  cfg.TEST_MAX_LONG_EDGE, cfg.TEST_FLIP, 
@@ -45,51 +44,53 @@ class AOTTracker(object):
         self.model.eval()
 
     @torch.no_grad()
-    def add_reference_frame(self, frame, mask, obj_nums, frame_step, incremental=False):
+    def add_reference_frame(self,
+                            frame: np.ndarray,
+                            mask: np.ndarray,
+                            obj_nums: Union[int, List[int]],
+                            frame_step: int,
+                            incremental: bool = False) -> None:        
         # mask = cv2.resize(mask, frame.shape[:2][::-1], interpolation = cv2.INTER_NEAREST)
-
         sample = {
             'current_img': frame,
             'current_label': mask,
         }
     
         sample = self.transform(sample)
-        frame = sample[0]['current_img'].unsqueeze(0).float().cuda(self.gpu_id)
-        mask = sample[0]['current_label'].unsqueeze(0).float().cuda(self.gpu_id)
-        _mask = F.interpolate(mask,size=frame.shape[-2:],mode='nearest')
+        frame_t = sample[0]['current_img'].unsqueeze(0).float().to(self.device)
+        mask_t = sample[0]['current_label'].unsqueeze(0).float().to(self.device)
+        _mask = F.interpolate(mask_t, size=frame_t.shape[-2:], mode='nearest')
 
         if incremental:
-            self.engine.add_reference_frame_incremental(frame, _mask, obj_nums=obj_nums, frame_step=frame_step)
+            self.engine.add_reference_frame_incremental(frame_t, _mask, obj_nums=obj_nums, frame_step=frame_step)
         else:
-            self.engine.add_reference_frame(frame, _mask, obj_nums=obj_nums, frame_step=frame_step)
+            self.engine.add_reference_frame(frame_t, _mask, obj_nums=obj_nums, frame_step=frame_step)
 
 
 
     @torch.no_grad()
-    def track(self, image):
+    def track(self, image: np.ndarray) -> torch.Tensor:
+        """Track objects for a single frame and return the label map tensor on CPU."""
+        output_height, output_width = image.shape[0], image.shape[1]
         output_height, output_width = image.shape[0], image.shape[1]
         sample = {'current_img': image}
         sample = self.transform(sample)
-        image = sample[0]['current_img'].unsqueeze(0).float().cuda(self.gpu_id)
-        self.engine.match_propogate_one_frame(image)
+        image_t = sample[0]['current_img'].unsqueeze(0).float().to(self.device)
+        self.engine.match_propogate_one_frame(image_t)
         pred_logit = self.engine.decode_current_logits((output_height, output_width))
-
-        # pred_prob = torch.softmax(pred_logit, dim=1)
-        pred_label = torch.argmax(pred_logit, dim=1,
-                                    keepdim=True).float()
-
+        pred_label = torch.argmax(pred_logit, dim=1, keepdim=True).float().cpu()
         return  pred_label
     
     @torch.no_grad()
-    def update_memory(self, pred_label):
+    def update_memory(self, pred_label: torch.Tensor) -> None:
         self.engine.update_memory(pred_label)
     
     @torch.no_grad()
-    def restart(self):
+    def restart(self) -> None:
         self.engine.restart_engine()
     
     @torch.no_grad()
-    def build_tracker_engine(self, name, **kwargs):
+    def build_tracker_engine(self, name: str, **kwargs):
         if name == 'aotengine':
             return AOTTrackerInferEngine(**kwargs)
         elif name == 'deaotengine':
@@ -101,7 +102,7 @@ class AOTTracker(object):
 class AOTTrackerInferEngine(AOTInferEngine):
     def __init__(self, aot_model, gpu_id=0, long_term_mem_gap=9999, short_term_mem_skip=1, max_aot_obj_num=None):
         super().__init__(aot_model, gpu_id, long_term_mem_gap, short_term_mem_skip, max_aot_obj_num)
-    def add_reference_frame_incremental(self, img, mask, obj_nums, frame_step=-1):
+    def add_reference_frame_incremental(self, img, mask, obj_nums, frame_step: int = -1):
         if isinstance(obj_nums, list):
             obj_nums = obj_nums[0]
         self.obj_nums = obj_nums
@@ -170,6 +171,10 @@ class DeAOTTrackerInferEngine(DeAOTInferEngine):
 
 
 def get_aot(args):
+    """Factory for AOTTracker from simple args dict.
+
+    Expected keys: phase, model, model_path, long_term_mem_gap, max_len_long_term, gpu_id
+    """
     # build vos engine
     engine_config = importlib.import_module('configs.' + 'pre_ytb_dav')
     cfg = engine_config.EngineConfig(args['phase'], args['model'])
