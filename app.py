@@ -377,7 +377,7 @@ def sam_click(Seg_Tracker, origin_frame, point_mode, click_stack, aot_model, lon
         point = {"coord": [evt.index[0], evt.index[1]], "mode": 0}
 
     Seg_Tracker = _ensure_tracker(
-        aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num,
+        Seg_Tracker, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num,
         points_per_side, sam_ckpt, gd_ckpt, origin_frame
     )
     if Seg_Tracker is None:
