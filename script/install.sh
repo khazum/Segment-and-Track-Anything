@@ -7,9 +7,7 @@ pip install groundingdino-py
 
 # Install other lib
 pip install numpy opencv-python pycocotools matplotlib Pillow==11.3.0 scikit-image
-pip install gradio==5.46.1 zip gdown pip3 insta
-pip install timm
-pip install wget
+pip install gradio==5.46.1 gdown insta timm wget
 
 # Install Pytorch Correlation
 pip install spatial-correlation-sampler
