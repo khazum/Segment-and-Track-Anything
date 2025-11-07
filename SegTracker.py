@@ -223,6 +223,11 @@ class SegTracker:
 
         # get annotated_frame and boxes
         annotated_frame, boxes = self.detector.run_grounding(origin_frame, grounding_caption, box_threshold, text_threshold)
+        
+        # Optimization: Set SAM image embedding ONCE before the loop.
+        # If reset_image is True, we force a new calculation.
+        self.sam.set_image(origin_frame, force=reset_image)
+
         # Initialize refined_merged_mask based on the current state
         if self.origin_merged_mask is None:
             h, w = origin_frame.shape[:2]
@@ -238,8 +243,8 @@ class SegTracker:
                 continue
                 
             # Segment the object within the bounding box
-            interactive_mask = self.sam.segment_with_box(origin_frame, bbox, reset_image)
-            
+            # We pass reset_image=False because embedding is already handled above.
+            interactive_mask = self.sam.segment_with_box(origin_frame, bbox, reset_image=False)            
             # Merge the new segmentation into the result mask using the current ID
             refined_merged_mask[interactive_mask > 0] = current_id
             

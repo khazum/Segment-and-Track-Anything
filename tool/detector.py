@@ -75,18 +75,18 @@ class Detector:
     def run_grounding(self, origin_frame, grounding_caption, box_threshold, text_threshold):
         '''
             return:
-                annotated_frame:nd.array
++               annotated_frame:nd.array (RGB)
                 transfered_boxes: nd.array [N, 4]: [[x0, y0], [x1, y1]]
         '''
         height, width, _ = origin_frame.shape
         img_pil = PIL.Image.fromarray(origin_frame)
         re_width, re_height = img_pil.size
         _, image_tensor = self.image_transform_grounding(img_pil)
-        # img_pil = self.image_transform_grounding_for_vis(img_pil)
 
         # run grounding
-        boxes, logits, phrases = predict(self.gd, image_tensor, grounding_caption, box_threshold, text_threshold, device=self.device)        
-        annotated_frame = annotate(image_source=np.asarray(img_pil), boxes=boxes, logits=logits, phrases=phrases)[:, :, ::-1]
+        boxes, logits, phrases = predict(self.gd, image_tensor, grounding_caption, box_threshold, text_threshold, device=self.device)
+        # The annotate function works in RGB. The previous BGR conversion [:, :, ::-1] was incorrect for Gradio/Matplotlib.
+        annotated_frame = annotate(image_source=np.asarray(img_pil), boxes=boxes, logits=logits, phrases=phrases)
         annotated_frame = cv2.resize(annotated_frame, (width, height), interpolation=cv2.INTER_LINEAR)
         
         # transfer boxes to sam-format 
