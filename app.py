@@ -197,8 +197,8 @@ def _prepare_args(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_
 
     return segtracker_args, sam_args, aot_args, gd_args
 
-# FIX 3: Refactored initialization logic (Core initialization)
-def init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame, sam_ckpt, gd_ckpt):
+def init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt, origin_frame):
+    
     # Initializes the tracker and returns the core state: [Seg_Tracker, input_first_frame_vis, click_stack]
 
     if origin_frame is None:
@@ -219,21 +219,19 @@ def init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_ob
         
     return Seg_Tracker, origin_frame, [[], []]
 
-# FIX 3: Helper functions for UI initialization/reset
-def init_for_stroke_tab(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame, sam_ckpt, gd_ckpt):
-    tracker, frame_vis, stack = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame, sam_ckpt, gd_ckpt)
+def init_for_stroke_tab(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt, origin_frame):
+    tracker, frame_vis, stack = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt, origin_frame)
     # Returns: [Tracker, FrameVis, Stack, DrawingBoard (reset to frame)]
     return tracker, frame_vis, stack, frame_vis
 
-def init_for_text_tab(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame, sam_ckpt, gd_ckpt):
-    tracker, frame_vis, stack = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame, sam_ckpt, gd_ckpt)
+def init_for_text_tab(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt, origin_frame):
+    tracker, frame_vis, stack = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt, origin_frame)
     # Returns: [Tracker, FrameVis, Stack, Caption (cleared)]
     return tracker, frame_vis, stack, ""
 
-def reset_app_state(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame, sam_ckpt, gd_ckpt):
+def reset_app_state(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt, origin_frame):
     # Used by the Reset button for a full reset.
-    tracker, frame_vis, stack = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame, sam_ckpt, gd_ckpt)
-    # Returns: [Tracker, FrameVis, Stack, Caption (cleared), DrawingBoard (reset to frame)]
+    tracker, frame_vis, stack = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt, origin_frame)    # Returns: [Tracker, FrameVis, Stack, Caption (cleared), DrawingBoard (reset to frame)]
     return tracker, frame_vis, stack, "", frame_vis
 
 
@@ -340,7 +338,7 @@ def seg_acc_click(Seg_Tracker, prompt, origin_frame):
 
     return masked_frame
 
-def _ensure_tracker(Seg_Tracker, origin_frame, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt):
+def _ensure_tracker(Seg_Tracker, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt, origin_frame):
     """Helper to ensure Seg_Tracker is initialized, initializing it if necessary."""
     if Seg_Tracker is not None:
         return Seg_Tracker
@@ -353,12 +351,11 @@ def _ensure_tracker(Seg_Tracker, origin_frame, aot_model, long_term_mem, max_len
     # Initialize using the standard initialization function
     # We only care about the tracker instance itself here.
     tracker, _, _ = init_SegTracker(
-        aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, 
-        points_per_side, origin_frame, sam_ckpt, gd_ckpt
+        aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num,
+        points_per_side, sam_ckpt, gd_ckpt, origin_frame
     )
     return tracker
 
-# FIX 2: Removed default values (=None) for sam_ckpt, gd_ckpt, and evt.
 def sam_click(Seg_Tracker, origin_frame, point_mode, click_stack, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt, evt:gr.SelectData):
     """
     Args:
@@ -380,8 +377,8 @@ def sam_click(Seg_Tracker, origin_frame, point_mode, click_stack, aot_model, lon
         point = {"coord": [evt.index[0], evt.index[1]], "mode": 0}
 
     Seg_Tracker = _ensure_tracker(
-        Seg_Tracker, origin_frame, aot_model, long_term_mem, max_len_long_term, 
-        sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt
+        aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num,
+        points_per_side, sam_ckpt, gd_ckpt, origin_frame
     )
     if Seg_Tracker is None:
         return None, origin_frame, click_stack
@@ -395,7 +392,7 @@ def sam_click(Seg_Tracker, origin_frame, point_mode, click_stack, aot_model, lon
     return Seg_Tracker, masked_frame, click_stack
 
 # FIX 2: Removed default values (=None) for sam_ckpt, gd_ckpt, and evt.
-def roll_back_sam_click(Seg_Tracker, origin_frame, point_mode, click_stack, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, input_video, input_img_seq, frame_num, refine_idx, sam_ckpt, gd_ckpt, evt:gr.SelectData):
+def roll_back_sam_click(Seg_Tracker, origin_frame, point_mode, click_stack, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt, input_video, input_img_seq, frame_num, refine_idx, evt:gr.SelectData):
     """
     Args:
         origin_frame: nd.array
@@ -417,8 +414,8 @@ def roll_back_sam_click(Seg_Tracker, origin_frame, point_mode, click_stack, aot_
         
     # In rollback mode, Seg_Tracker should ideally be present, but we ensure it exists.
     Seg_Tracker = _ensure_tracker(
-        Seg_Tracker, origin_frame, aot_model, long_term_mem, max_len_long_term, 
-        sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt
+        Seg_Tracker, aot_model, long_term_mem, max_len_long_term,
+        sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt, origin_frame
     )
     if Seg_Tracker is None:
         return None, origin_frame, click_stack
@@ -459,8 +456,8 @@ def roll_back_sam_click(Seg_Tracker, origin_frame, point_mode, click_stack, aot_
 def sam_stroke(Seg_Tracker, origin_frame, drawing_board, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt):
 
     Seg_Tracker = _ensure_tracker(
-        Seg_Tracker, origin_frame, aot_model, long_term_mem, max_len_long_term, 
-        sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt
+        Seg_Tracker, aot_model, long_term_mem, max_len_long_term,
+        sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt, origin_frame
     )
     if Seg_Tracker is None:
         # If initialization failed, return current state.
@@ -533,8 +530,8 @@ def sam_stroke(Seg_Tracker, origin_frame, drawing_board, aot_model, long_term_me
 
 def gd_detect(Seg_Tracker, origin_frame, grounding_caption, box_threshold, text_threshold, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt):
     Seg_Tracker = _ensure_tracker(
-        Seg_Tracker, origin_frame, aot_model, long_term_mem, max_len_long_term, 
-        sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt
+        Seg_Tracker, aot_model, long_term_mem, max_len_long_term,
+        sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt, origin_frame
     )
     if Seg_Tracker is None:
         # Adjusted return to match expected outputs in the listener
@@ -551,10 +548,10 @@ def gd_detect(Seg_Tracker, origin_frame, grounding_caption, box_threshold, text_
     # Adjusted return to match expected outputs in the listener
     return Seg_Tracker, masked_frame
 
-def segment_everything(Seg_Tracker, aot_model, long_term_mem, max_len_long_term, origin_frame, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt):
+def segment_everything(Seg_Tracker, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt, origin_frame):
     Seg_Tracker = _ensure_tracker(
-        Seg_Tracker, origin_frame, aot_model, long_term_mem, max_len_long_term, 
-        sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt
+        Seg_Tracker, aot_model, long_term_mem, max_len_long_term,
+        sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt, origin_frame
     )
     if Seg_Tracker is None:
         return None, origin_frame
@@ -775,9 +772,9 @@ def choose_obj_to_refine(input_video, input_img_seq, Seg_Tracker, frame_num, evt
 def show_chosen_idx_to_refine(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt, input_video, input_img_seq, Seg_Tracker, frame_num, idx):
     # Check if a valid object was selected (idx is not None)
     if idx is None:
-         # Return existing state without changes, ensure caption is clear.
-         _, _, ori_frame = res_by_num(input_video, input_img_seq, frame_num)
-         return ori_frame, Seg_Tracker, ori_frame, [[], []], ""
+        # Return existing state without changes, ensure caption is clear.
+        _, _, ori_frame = res_by_num(input_video, input_img_seq, frame_num)
+        return ori_frame, Seg_Tracker, ori_frame, [[], []], ""
 
     chosen_frame_show, curr_mask, ori_frame = res_by_num(input_video, input_img_seq, frame_num)
     
@@ -785,7 +782,7 @@ def show_chosen_idx_to_refine(aot_model, long_term_mem, max_len_long_term, sam_g
         return None, Seg_Tracker, None, [[], []], ""
 
     # Ensure tracker is initialized before refinement.
-    Seg_Tracker = _ensure_tracker(Seg_Tracker, ori_frame, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt)
+    Seg_Tracker = _ensure_tracker(Seg_Tracker, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt, ori_frame)
 
     # Reset the tracker state completely to prepare for refinement from this frame
     if Seg_Tracker:
