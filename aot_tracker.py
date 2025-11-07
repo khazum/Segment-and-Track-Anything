@@ -1,6 +1,5 @@
 import sys
-from typing import List, Union
-
+from typing import List, Union, Type
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -107,38 +106,46 @@ class AOTTracker:
         """Clear state/memory in the underlying engine."""
         self.engine.restart_engine()
     
-    @torch.no_grad()
-    def build_tracker_engine(self, name: str, **kwargs):
-        """Factory for tracker infer engines by name."""
-        if name == 'aotengine':
-            return AOTTrackerInferEngine(**kwargs)
-        if name == 'deaotengine':
-            return DeAOTTrackerInferEngine(**kwargs)
-        raise ValueError(f"Unknown engine '{name}'. Expected 'aotengine' or 'deaotengine'.")
 
-
-class AOTTrackerInferEngine(AOTInferEngine):
-    def __init__(self, aot_model, gpu_id=0, long_term_mem_gap=9999, short_term_mem_skip=1, max_aot_obj_num=None):
-        super().__init__(aot_model, gpu_id, long_term_mem_gap, short_term_mem_skip, max_aot_obj_num)
+class IncrementalInferenceMixin:
+    """Mixin to provide incremental reference frame addition logic for AOT/DeAOT infer engines.
+    
+    Host class must provide attributes: obj_nums, max_aot_obj_num, aot_engines, AOT, gpu_id, 
+    long_term_mem_gap, short_term_mem_skip, separate_mask(), update_size().
+    """
+    
+    # Concrete class must define the specific engine class (AOTEngine or DeAOTEngine)
+    _engine_class: Union[Type[AOTEngine], Type[DeAOTEngine]] = None 
 
     def add_reference_frame_incremental(self, img, mask, obj_nums, frame_step: int = -1):
+        if self._engine_class is None:
+            raise NotImplementedError("Concrete class must define _engine_class")
+
         if isinstance(obj_nums, list):
             obj_nums = obj_nums[0]
         self.obj_nums = obj_nums
         aot_num = max(np.ceil(obj_nums / self.max_aot_obj_num), 1)
+        
+        # Ensure enough engines are available
         while aot_num > len(self.aot_engines):
-            new_engine = AOTEngine(self.AOT, self.gpu_id,
-                                    self.long_term_mem_gap,
-                                    self.short_term_mem_skip)
+            new_engine = self._engine_class(self.AOT, self.gpu_id,
+                                            self.long_term_mem_gap,
+                                            self.short_term_mem_skip)
             new_engine.eval()
             self.aot_engines.append(new_engine)
 
         separated_masks, separated_obj_nums = self.separate_mask(
             mask, obj_nums)
         img_embs = None
+
+        # Process masks across engines
         for aot_engine, separated_mask, separated_obj_num in zip(
                 self.aot_engines, separated_masks, separated_obj_nums):
-            if aot_engine.obj_nums is None or aot_engine.obj_nums[0] < separated_obj_num:
+            
+            # Check if the engine needs a full reference frame update or just short-term memory update
+            needs_reference = aot_engine.obj_nums is None or aot_engine.obj_nums[0] < separated_obj_num
+            
+            if needs_reference:
                 aot_engine.add_reference_frame(img,
                                             separated_mask,
                                             obj_nums=[separated_obj_num],
@@ -147,46 +154,19 @@ class AOTTrackerInferEngine(AOTInferEngine):
             else:
                 aot_engine.update_short_term_memory(separated_mask)
                 
-            if img_embs is None:  # reuse image embeddings
+            # Reuse image embeddings from the first engine that computes them
+            if img_embs is None and hasattr(aot_engine, 'curr_enc_embs'):
                 img_embs = aot_engine.curr_enc_embs
 
         self.update_size()
 
 
-class DeAOTTrackerInferEngine(DeAOTInferEngine):
-    def __init__(self, aot_model, gpu_id=0, long_term_mem_gap=9999, short_term_mem_skip=1, max_aot_obj_num=None):
-        super().__init__(aot_model, gpu_id, long_term_mem_gap, short_term_mem_skip, max_aot_obj_num)
+class AOTTrackerInferEngine(IncrementalInferenceMixin, AOTInferEngine):
+    _engine_class = AOTEngine
 
-    def add_reference_frame_incremental(self, img, mask, obj_nums, frame_step=-1):
-        if isinstance(obj_nums, list):
-            obj_nums = obj_nums[0]
-        self.obj_nums = obj_nums
-        aot_num = max(np.ceil(obj_nums / self.max_aot_obj_num), 1)
-        while aot_num > len(self.aot_engines):
-            new_engine = DeAOTEngine(self.AOT, self.gpu_id,
-                                    self.long_term_mem_gap,
-                                    self.short_term_mem_skip)
-            new_engine.eval()
-            self.aot_engines.append(new_engine)
 
-        separated_masks, separated_obj_nums = self.separate_mask(
-            mask, obj_nums)
-        img_embs = None
-        for aot_engine, separated_mask, separated_obj_num in zip(
-                self.aot_engines, separated_masks, separated_obj_nums):
-            if aot_engine.obj_nums is None or aot_engine.obj_nums[0] < separated_obj_num:
-                aot_engine.add_reference_frame(img,
-                                            separated_mask,
-                                            obj_nums=[separated_obj_num],
-                                            frame_step=frame_step,
-                                            img_embs=img_embs)
-            else:
-                aot_engine.update_short_term_memory(separated_mask)
-                
-            if img_embs is None:  # reuse image embeddings
-                img_embs = aot_engine.curr_enc_embs
-
-        self.update_size()
+class DeAOTTrackerInferEngine(IncrementalInferenceMixin, DeAOTInferEngine):
+    _engine_class = DeAOTEngine
 
 def get_aot(args):
     """Factory for :class:`AOTTracker` from a simple args dict.

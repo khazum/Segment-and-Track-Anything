@@ -1,12 +1,10 @@
 import sys
-sys.path.append("..")
-sys.path.append("./sam")
 import cv2
 import numpy as np
 
 from aot_tracker import get_aot
 from seg_track_anything import draw_mask
-from tool.detector import Detector
+from tool.detector import Detector, DEFAULT_CKPT_PATH, DEFAULT_CONFIG_FILE
 from tool.segmenter import Segmenter
 from tool.transfer_tools import draw_outline, draw_points
 
@@ -17,13 +15,14 @@ class SegTracker:
         self.tracker = get_aot(aot_args)
         # Allow dynamic GroundingDINO checkpoint/config selection
         if gd_args is None:
-            self.detector = Detector(self.sam.device)
-        else:
-            self.detector = Detector(
-                self.sam.device,
-                ckpt_path=gd_args.get("ckpt_path", "./ckpt/groundingdino_swint_ogc.pth"),
-                config_file=gd_args.get("config_file", "config/GroundingDINO_SwinT_OGC.py"),
-            )
+            gd_args = {}
+
+        self.detector = Detector(
+            self.sam.device,
+            ckpt_path=gd_args.get("ckpt_path", DEFAULT_CKPT_PATH),
+            config_file=gd_args.get("config_file", DEFAULT_CONFIG_FILE),
+        )
+
         self.sam_gap = segtracker_args['sam_gap']
         self.min_area = segtracker_args['min_area']
         self.max_obj_num = segtracker_args['max_obj_num']
@@ -160,7 +159,7 @@ class SegTracker:
             masked_frame: numpy array (h, w, c)
         '''
         # get interactive_mask
-        interactive_mask = self.sam.segment_with_box(origin_frame, bbox)[0]
+        interactive_mask = self.sam.segment_with_box(origin_frame, bbox)
         refined_merged_mask = self.add_mask(interactive_mask)
 
         # draw mask
@@ -221,25 +220,52 @@ class SegTracker:
             refined_merged_mask: numpy array (h, w)
             annotated_frame: numpy array (h, w, 3)
         '''
-        # backup id and origin-merged-mask
-        bc_id = self.curr_idx
-        bc_mask = self.origin_merged_mask
 
         # get annotated_frame and boxes
         annotated_frame, boxes = self.detector.run_grounding(origin_frame, grounding_caption, box_threshold, text_threshold)
+        # Initialize refined_merged_mask based on the current state
+        if self.origin_merged_mask is None:
+            h, w = origin_frame.shape[:2]
+            refined_merged_mask = np.zeros((h, w), dtype=np.uint8)
+        else:
+            refined_merged_mask = self.origin_merged_mask.copy()
+
+        # Start assigning IDs from the current index
+        current_id = self.curr_idx
         for i in range(len(boxes)):
             bbox = boxes[i]
             if (bbox[1][0] - bbox[0][0]) * (bbox[1][1] - bbox[0][1]) > annotated_frame.shape[0] * annotated_frame.shape[1] * box_size_threshold:
                 continue
-            interactive_mask = self.sam.segment_with_box(origin_frame, bbox, reset_image)[0]
-            refined_merged_mask = self.add_mask(interactive_mask)
-            self.update_origin_merged_mask(refined_merged_mask)
-            self.curr_idx += 1
+                
+            # Segment the object within the bounding box
+            interactive_mask = self.sam.segment_with_box(origin_frame, bbox, reset_image)
+            
+            # Merge the new segmentation into the result mask using the current ID
+            refined_merged_mask[interactive_mask > 0] = current_id
+            
+            # Increment ID for the next detected object
+            current_id += 1
 
-        # reset origin_mask
-        self.reset_origin_merged_mask(bc_mask, bc_id)
-
+        # Note: We do NOT update the internal state (self.origin_merged_mask, self.curr_idx) here.
+        # The caller (e.g., app.py) is responsible for deciding whether to commit this mask
+        # and update the tracker state using SegTracker_add_first_frame.
         return refined_merged_mask, annotated_frame
+
+    def reset_state(self):
+        """Reset SegTracker state completely, including tracker engine and segmentation info."""
+        self.restart_tracker()
+        # Reset all internal tracking and mask references
+        self.reference_objs_list = []
+        self.object_idx = 1
+        self.curr_idx = 1
+        self.origin_merged_mask = None
+        self.first_frame_mask = None
+        self.everything_points = []
+        self.everything_labels = []
+
+        # Reset SAM embedding state
+        self.sam.reset_image()
+
 
 if __name__ == '__main__':
     from model_args import segtracker_args,sam_args,aot_args

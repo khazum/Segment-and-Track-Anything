@@ -23,13 +23,17 @@ def _resolve_config_path(config_file: str) -> str:
     # Fallback to SwinT OGC config in this repo
     return "config/GroundingDINO_SwinT_OGC.py"
 
+DEFAULT_CKPT_PATH = "./ckpt/groundingdino_swint_ogc.pth"
+DEFAULT_CONFIG_FILE = "config/GroundingDINO_SwinT_OGC.py"
+
+
 class Detector:
-    def __init__(self, device, ckpt_path: str = "./ckpt/groundingdino_swint_ogc.pth",
-                 config_file: str = "config/GroundingDINO_SwinT_OGC.py"):
+    def __init__(self, device, ckpt_path: str = DEFAULT_CKPT_PATH,
+                 config_file: str = DEFAULT_CONFIG_FILE):
         config_file = _resolve_config_path(config_file)
         args = SLConfig.fromfile(config_file)
         args.device = device
-        self.deivce = device
+        self.device = device
         self.gd = build_grounding_dino(args)
 
         grounding_dino_ckpt = ckpt_path
@@ -80,8 +84,8 @@ class Detector:
         _, image_tensor = self.image_transform_grounding(img_pil)
         # img_pil = self.image_transform_grounding_for_vis(img_pil)
 
-        # run grounidng
-        boxes, logits, phrases = predict(self.gd, image_tensor, grounding_caption, box_threshold, text_threshold, device=self.deivce)
+        # run grounding
+        boxes, logits, phrases = predict(self.gd, image_tensor, grounding_caption, box_threshold, text_threshold, device=self.device)        
         annotated_frame = annotate(image_source=np.asarray(img_pil), boxes=boxes, logits=logits, phrases=phrases)[:, :, ::-1]
         annotated_frame = cv2.resize(annotated_frame, (width, height), interpolation=cv2.INTER_LINEAR)
         

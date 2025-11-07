@@ -1,6 +1,7 @@
 import os
 import gradio as gr
-from model_args import segtracker_args, sam_args, aot_args, gd_args, SAM_CKPT_TO_TYPE, GD_CKPT_TO_CONFIG
+from model_args import segtracker_args as default_segtracker_args, sam_args as default_sam_args, aot_args as default_aot_args, gd_args as default_gd_args, SAM_CKPT_TO_TYPE, GD_CKPT_TO_CONFIG
+import copy
 import tempfile
 from SegTracker import SegTracker
 from tool.transfer_tools import draw_outline, draw_points
@@ -8,17 +9,16 @@ import cv2
 from PIL import Image
 import torch
 import math
-from seg_track_anything import aot_model2ckpt, tracking_objects_in_video, draw_mask
+from seg_track_anything import aot_model2ckpt, tracking_objects_in_video, draw_mask, TRACKING_RESULTS_DIR
 import gc
 import numpy as np
-from tool.transfer_tools import mask2bbox
-from ast_master.prepare import ASTpredict
-from moviepy.video.io import VideoFileClip
+from tool.transfer_tools import mask2bbox, draw_mask
 import zipfile
 import shutil
 
 # Common image filename extensions accepted by the app.
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp")
+ASSETS_DIR = os.path.join(os.path.dirname(__file__), 'assets')
 
 def clean():
     """Reset UI state for a new input."""
@@ -66,27 +66,6 @@ def _gd_config_for_ckpt(ckpt_path: str) -> str:
     # Default to SwinT OGC
     return "config/GroundingDINO_SwinT_OGC.py"
 
-def audio_to_text(input_video, label_num, threshold):
-    # Extract audio track and run AST prediction
-    with tempfile.TemporaryDirectory() as tmpdir:
-        audio_path = os.path.join(tmpdir, "audio.flac")
-        video_wo_audio_path = os.path.join(tmpdir, "video_wo_audio.mp4")
-        with VideoFileClip(input_video) as video:
-            # Strip audio (for downstream video-only usage if needed)
-            video.set_audio(None).write_videofile(video_wo_audio_path, logger=None, audio=False)
-            # Extract audio to a temp file
-            video.audio.write_audiofile(audio_path, codec="flac", logger=None)
-        # Run AST on the extracted audio (CPU or GPU as available)
-        top_labels, top_labels_probs = ASTpredict(audio_path)
-    # Build the (label -> prob) mapping and concatenated text
-    kept = {
-        str(top_labels[k]): float(top_labels_probs[k])
-        for k in range(10)
-        if k < label_num and float(top_labels_probs[k]) > float(threshold)
-    }
-    predicted_texts = " ".join(kept.keys())
-    return predicted_texts, kept
-
 def get_click_prompt(click_stack, point):
 
     click_stack[0].append(point["coord"])
@@ -121,10 +100,11 @@ def get_meta_from_img_seq(input_img_seq):
     if input_img_seq is None:
         return None, None, None, ""
 
+    os.makedirs(ASSETS_DIR, exist_ok=True)
     print("get meta information of img seq")
     # Prepare extraction dir
     file_name = os.path.splitext(os.path.basename(input_img_seq.name))[0]
-    file_path = os.path.join('./assets', file_name)
+    file_path = os.path.join(ASSETS_DIR, file_name)
     if os.path.isdir(file_path):
         shutil.rmtree(file_path)
     os.makedirs(file_path, exist_ok=True)
@@ -158,65 +138,65 @@ def SegTracker_add_first_frame(Seg_Tracker, origin_frame, predicted_mask):
 
     return Seg_Tracker
 
-def init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame, sam_ckpt, gd_ckpt):
-    
-    if origin_frame is None:
-        return None, origin_frame, [[], []], ""
+def _prepare_args(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt):
+    """Prepare argument dictionaries for SegTracker initialization by copying defaults and applying overrides."""
+    # Use deepcopy to ensure nested dictionaries (like generator_args) are independent and global defaults are not mutated.
+    segtracker_args = copy.deepcopy(default_segtracker_args)
+    sam_args = copy.deepcopy(default_sam_args)
+    aot_args = copy.deepcopy(default_aot_args)
+    gd_args = copy.deepcopy(default_gd_args)
 
-    # reset aot args
-    aot_args["model"] = aot_model
-    aot_args["model_path"] = aot_model2ckpt[aot_model]
+    # Apply AOT args overrides
+    if aot_model:
+        aot_args["model"] = aot_model
+        # Use .get() for safer access in case the model name is invalid
+        aot_args["model_path"] = aot_model2ckpt.get(aot_model, aot_args["model_path"])
+
     aot_args["long_term_mem_gap"] = long_term_mem
     aot_args["max_len_long_term"] = max_len_long_term
-    # reset sam args
-    segtracker_args["sam_gap"] = sam_gap
-    segtracker_args["max_obj_num"] = max_obj_num
-    sam_args["generator_args"]["points_per_side"] = points_per_side
-    # set selected SAM checkpoint/model
-    if sam_ckpt is not None:
-        sam_args["sam_checkpoint"] = sam_ckpt
-        sam_args["model_type"] = _infer_sam_model_type(sam_ckpt)
-    # set selected GroundingDINO checkpoint/config
-    _gd_cfg = _gd_config_for_ckpt(gd_ckpt) if gd_ckpt is not None else gd_args["config_file"]
-    gd_args["ckpt_path"] = gd_ckpt or gd_args["ckpt_path"]
-    gd_args["config_file"] = _gd_cfg    
-    Seg_Tracker = SegTracker(segtracker_args, sam_args, aot_args, gd_args)
-    Seg_Tracker.restart_tracker()
-
-    return Seg_Tracker, origin_frame, [[], []], ""
-
-def init_SegTracker_Stroke(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame, sam_ckpt, gd_ckpt):
     
-    if origin_frame is None:
-        return None, origin_frame, [[], []], origin_frame
-
-    # reset aot args
-    aot_args["model"] = aot_model
-    aot_args["model_path"] = aot_model2ckpt[aot_model]
-    aot_args["long_term_mem_gap"] = long_term_mem
-    aot_args["max_len_long_term"] = max_len_long_term
-
-    # reset sam args
+    # Apply SegTracker args overrides
     segtracker_args["sam_gap"] = sam_gap
     segtracker_args["max_obj_num"] = max_obj_num
+    
+    # Apply SAM args overrides
     sam_args["generator_args"]["points_per_side"] = points_per_side
     if sam_ckpt is not None:
         sam_args["sam_checkpoint"] = sam_ckpt
         sam_args["model_type"] = _infer_sam_model_type(sam_ckpt)
+    
+    # Apply GroundingDINO args overrides
     _gd_cfg = _gd_config_for_ckpt(gd_ckpt) if gd_ckpt is not None else gd_args["config_file"]
     gd_args["ckpt_path"] = gd_ckpt or gd_args["ckpt_path"]
     gd_args["config_file"] = _gd_cfg
 
+    return segtracker_args, sam_args, aot_args, gd_args
+
+def init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame, sam_ckpt, gd_ckpt):
+    # This function handles initialization events (like tab switches or reset).
+    # The return values map to [Seg_Tracker, input_first_frame, click_stack, ResetElement], 
+    # where ResetElement depends on the context (grounding_caption or drawing_board).
+
+    if origin_frame is None:
+        return None, None, [[], []], None
+
+    segtracker_args, sam_args, aot_args, gd_args = _prepare_args(
+        aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt
+    )
     Seg_Tracker = SegTracker(segtracker_args, sam_args, aot_args, gd_args)
     Seg_Tracker.restart_tracker()
+    # We return origin_frame as the 4th element to reset the associated UI element (caption or drawing board)
     return Seg_Tracker, origin_frame, [[], []], origin_frame
 
-def undo_click_stack_and_refine_seg(Seg_Tracker, origin_frame, click_stack, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt=None, gd_ckpt=None):
-    
+# Simplified handlers by removing unused configuration arguments.
+
+def undo_click_stack_and_refine_seg(Seg_Tracker, origin_frame, click_stack):    
     if Seg_Tracker is None:
-        return Seg_Tracker, origin_frame, [[], []]
+        # If tracker is missing, we can't undo, just reset the view.
+        return None, origin_frame, [[], []]
 
     print("Undo!")
+    # Remove the last click
     if len(click_stack[0]) > 0:
         click_stack[0] = click_stack[0][: -1]
         click_stack[1] = click_stack[1][: -1]
@@ -225,18 +205,27 @@ def undo_click_stack_and_refine_seg(Seg_Tracker, origin_frame, click_stack, aot_
         prompt = {
             "points_coord":click_stack[0],
             "points_mode":click_stack[1],
-            "multimask":"True",
+            "multimask": True,
         }
 
         masked_frame = seg_acc_click(Seg_Tracker, prompt, origin_frame)
         return Seg_Tracker, masked_frame, click_stack
     else:
-        return Seg_Tracker, origin_frame, [[], []]
+        # If no clicks remain, revert the visualization to the state before this object was started.
+        # This relies on Seg_Tracker.origin_merged_mask holding the previous state.
+        if Seg_Tracker.origin_merged_mask is not None:
+            masked_frame = draw_mask(origin_frame.copy(), Seg_Tracker.origin_merged_mask)
+            # Update the current working mask (first_frame_mask) back to the origin state
+            Seg_Tracker.first_frame_mask = Seg_Tracker.origin_merged_mask.copy()
+        else:
+            masked_frame = origin_frame
+            Seg_Tracker.first_frame_mask = None
 
-def roll_back_undo_click_stack_and_refine_seg(Seg_Tracker, origin_frame, click_stack, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, input_video, input_img_seq, frame_num, refine_idx, sam_ckpt=None, gd_ckpt=None):
-    
+        return Seg_Tracker, masked_frame, [[], []]
+
+def roll_back_undo_click_stack_and_refine_seg(Seg_Tracker, origin_frame, click_stack, input_video, input_img_seq, frame_num, refine_idx):
     if Seg_Tracker is None:
-        return Seg_Tracker, origin_frame, [[], []]
+        return None, origin_frame, [[], []]
 
     print("Undo!")
     if len(click_stack[0]) > 0:
@@ -247,23 +236,42 @@ def roll_back_undo_click_stack_and_refine_seg(Seg_Tracker, origin_frame, click_s
         prompt = {
             "points_coord":click_stack[0],
             "points_mode":click_stack[1],
-            "multimask":"True",
+            "multimask": True,
         }
 
-        chosen_frame_show, curr_mask, ori_frame = res_by_num(input_video, input_img_seq, frame_num)
+        # We need the current overall mask state for this frame to merge the results
+        _, curr_mask, _ = res_by_num(input_video, input_img_seq, frame_num)
+        if curr_mask is None:
+            print("Error: Failed to load mask for rollback undo.")
+            return Seg_Tracker, origin_frame, click_stack
         Seg_Tracker.curr_idx = refine_idx
-        predicted_mask, masked_frame = Seg_Tracker.seg_acc_click( 
-                                                        origin_frame=origin_frame, 
-                                                        coords=np.array(prompt["points_coord"]),
-                                                        modes=np.array(prompt["points_mode"]),
-                                                        multimask=prompt["multimask"],
-                                                        )
+        predicted_mask, _ = Seg_Tracker.seg_acc_click( 
+                                                    origin_frame=origin_frame, 
+                                                    coords=np.array(prompt["points_coord"]),
+                                                    modes=np.array(prompt["points_mode"]),
+                                                    multimask=prompt["multimask"],
+                                                    )
         curr_mask[curr_mask == refine_idx]  = 0
         curr_mask[predicted_mask != 0]  = refine_idx
-        predicted_mask=curr_mask
-        Seg_Tracker = SegTracker_add_first_frame(Seg_Tracker, origin_frame, predicted_mask)
+        merged_mask = curr_mask
+        
+        # Update the tracker state with the new merged mask
+        Seg_Tracker = SegTracker_add_first_frame(Seg_Tracker, origin_frame, merged_mask)
+        # Redraw the frame visualization based on the final merged mask
+        masked_frame = draw_mask(origin_frame.copy(), merged_mask)
+
         return Seg_Tracker, masked_frame, click_stack
     else:
+        # No clicks left, remove the object being refined from the mask
+        _, curr_mask, _ = res_by_num(input_video, input_img_seq, frame_num)
+        if curr_mask is not None:
+            curr_mask[curr_mask == refine_idx] = 0
+            merged_mask = curr_mask
+            Seg_Tracker = SegTracker_add_first_frame(Seg_Tracker, origin_frame, merged_mask)
+            masked_frame = draw_mask(origin_frame.copy(), merged_mask)
+            return Seg_Tracker, masked_frame, [[], []]
+        
+        # Fallback if mask loading failed
         return Seg_Tracker, origin_frame, [[], []]
 
 def seg_acc_click(Seg_Tracker, prompt, origin_frame):
@@ -279,6 +287,24 @@ def seg_acc_click(Seg_Tracker, prompt, origin_frame):
 
     return masked_frame
 
+def _ensure_tracker(Seg_Tracker, origin_frame, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt):
+    """Helper to ensure Seg_Tracker is initialized, initializing it if necessary."""
+    if Seg_Tracker is not None:
+        return Seg_Tracker
+        
+    if origin_frame is None:
+        print("Warning: Cannot initialize tracker without an input frame.")
+        return None
+
+    print("Initializing SegTracker on demand...")
+    # Initialize using the standard initialization function
+    # We only care about the tracker instance itself here.
+    tracker, _, _, _ = init_SegTracker(
+        aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, 
+        points_per_side, origin_frame, sam_ckpt, gd_ckpt
+    )
+    return tracker
+
 def sam_click(Seg_Tracker, origin_frame, point_mode, click_stack, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt=None, gd_ckpt=None, evt:gr.SelectData=None):
     """
     Args:
@@ -293,13 +319,12 @@ def sam_click(Seg_Tracker, origin_frame, point_mode, click_stack, aot_model, lon
     else:
         point = {"coord": [evt.index[0], evt.index[1]], "mode": 0}
 
+    Seg_Tracker = _ensure_tracker(
+        Seg_Tracker, origin_frame, aot_model, long_term_mem, max_len_long_term, 
+        sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt
+    )
     if Seg_Tracker is None:
-        # If your init_SegTracker already supports the new args, pass them through:
-        try:
-            Seg_Tracker, _, _, _ = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame, sam_ckpt, gd_ckpt)
-        except TypeError:
-            # Backward-compat if init_SegTracker hasn't been expanded yet.
-            Seg_Tracker, _, _, _ = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame)
+        return None, origin_frame, click_stack
 
     # get click prompts for sam to predict mask
     click_prompt = get_click_prompt(click_stack, point)
@@ -322,39 +347,53 @@ def roll_back_sam_click(Seg_Tracker, origin_frame, point_mode, click_stack, aot_
         point = {"coord": [evt.index[0], evt.index[1]], "mode": 1}
     else:
         point = {"coord": [evt.index[0], evt.index[1]], "mode": 0}
-
+        
+    # In rollback mode, Seg_Tracker should ideally be present, but we ensure it exists.
+    Seg_Tracker = _ensure_tracker(
+        Seg_Tracker, origin_frame, aot_model, long_term_mem, max_len_long_term, 
+        sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt
+    )
     if Seg_Tracker is None:
-        try:
-            Seg_Tracker, _, _, _ = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame, sam_ckpt, gd_ckpt)
-        except TypeError:
-            Seg_Tracker, _, _, _ = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame)
+        return None, origin_frame, click_stack
 
     # get click prompts for sam to predict mask
     prompt = get_click_prompt(click_stack, point)
 
-    chosen_frame_show, curr_mask, ori_frame = res_by_num(input_video, input_img_seq, frame_num)
-
+    # We need the current overall mask state for this frame to merge the results
+    _, curr_mask, _ = res_by_num(input_video, input_img_seq, frame_num)
+    if curr_mask is None:
+        print("Error: Failed to load mask for rollback click.")
+        return Seg_Tracker, origin_frame, click_stack
     Seg_Tracker.curr_idx = refine_idx
-
-    predicted_mask, masked_frame = Seg_Tracker.seg_acc_click( 
-                                                      origin_frame=origin_frame, 
-                                                      coords=np.array(prompt["points_coord"]),
-                                                      modes=np.array(prompt["points_mode"]),
-                                                      multimask=prompt["multimask"],
-                                                    )
+    
+    # Get the refined mask for the specific object
+    predicted_mask, _ = Seg_Tracker.seg_acc_click(
+                                                    origin_frame=origin_frame, 
+                                                    coords=np.array(prompt["points_coord"]),
+                                                    modes=np.array(prompt["points_mode"]),
+                                                    multimask=prompt["multimask"],
+                                                )
     curr_mask[curr_mask == refine_idx]  = 0
     curr_mask[predicted_mask != 0]  = refine_idx
-    predicted_mask=curr_mask
+    merged_mask = curr_mask
 
-    Seg_Tracker = SegTracker_add_first_frame(Seg_Tracker, origin_frame, predicted_mask)
+    # Update the tracker state with the new merged mask
+    Seg_Tracker = SegTracker_add_first_frame(Seg_Tracker, origin_frame, merged_mask)
+    
+    # Redraw the frame visualization based on the final merged mask
+    masked_frame = draw_mask(origin_frame.copy(), merged_mask)
 
     return Seg_Tracker, masked_frame, click_stack
 
 def sam_stroke(Seg_Tracker, origin_frame, drawing_board, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt):
 
+    Seg_Tracker = _ensure_tracker(
+        Seg_Tracker, origin_frame, aot_model, long_term_mem, max_len_long_term, 
+        sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt
+    )
     if Seg_Tracker is None:
-        Seg_Tracker, _ , _, _ = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame, sam_ckpt, gd_ckpt)
-    
+        return None, origin_frame, origin_frame
+
     print("Stroke")
     mask = drawing_board["mask"]
     bbox = mask2bbox(mask[:, :, 0])  # bbox: [[x0, y0], [x1, y1]]
@@ -365,8 +404,12 @@ def sam_stroke(Seg_Tracker, origin_frame, drawing_board, aot_model, long_term_me
     return Seg_Tracker, masked_frame, origin_frame
 
 def gd_detect(Seg_Tracker, origin_frame, grounding_caption, box_threshold, text_threshold, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt):
+    Seg_Tracker = _ensure_tracker(
+        Seg_Tracker, origin_frame, aot_model, long_term_mem, max_len_long_term, 
+        sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt
+    )
     if Seg_Tracker is None:
-        Seg_Tracker, _ , _, _ = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame, sam_ckpt, gd_ckpt)
+        return None, origin_frame, origin_frame
 
     print("Detect")
     predicted_mask, annotated_frame= Seg_Tracker.detect_and_seg(origin_frame, grounding_caption, box_threshold, text_threshold)
@@ -379,9 +422,12 @@ def gd_detect(Seg_Tracker, origin_frame, grounding_caption, box_threshold, text_
     return Seg_Tracker, masked_frame, origin_frame
 
 def segment_everything(Seg_Tracker, aot_model, long_term_mem, max_len_long_term, origin_frame, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt):
-    
+    Seg_Tracker = _ensure_tracker(
+        Seg_Tracker, origin_frame, aot_model, long_term_mem, max_len_long_term, 
+        sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt
+    )
     if Seg_Tracker is None:
-        Seg_Tracker, _ , _, _ = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, origin_frame, sam_ckpt, gd_ckpt)
+        return None, origin_frame
 
     print("Everything")
 
@@ -408,11 +454,11 @@ def add_new_object(Seg_Tracker):
 
     return Seg_Tracker, [[], []]
 
-def tracking_objects(Seg_Tracker, input_video, input_img_seq, fps, frame_num=0):
+def tracking_objects(Seg_Tracker, input_video, input_img_seq, fps, frame_num=None):    
     print("Start tracking !")
+    start_frame = int(frame_num) if frame_num is not None else 0
     # Start actual tracking pipeline
-    return tracking_objects_in_video(Seg_Tracker, input_video, input_img_seq, fps, frame_num)
-
+    return tracking_objects_in_video(Seg_Tracker, input_video, input_img_seq, fps, start_frame)
 def res_by_num(input_video, input_img_seq, frame_num):
     if input_video is not None:
         video_name = os.path.basename(input_video).split('.')[0]
@@ -431,7 +477,7 @@ def res_by_num(input_video, input_img_seq, frame_num):
         ori_frame = cv2.cvtColor(ori_frame, cv2.COLOR_BGR2RGB)
     elif input_img_seq is not None:
         file_name = os.path.splitext(os.path.basename(input_img_seq.name))[0]
-        file_path = os.path.join('./assets', file_name)
+        file_path = os.path.join(ASSETS_DIR, file_name)
         video_name = file_name
         imgs_path = sorted(
             os.path.join(file_path, n)
@@ -445,7 +491,7 @@ def res_by_num(input_video, input_img_seq, frame_num):
     else:
         return None, None, None
 
-    tracking_result_dir = f'{os.path.join(os.path.dirname(__file__), "tracking_results", f"{video_name}")}'
+    tracking_result_dir = os.path.join(TRACKING_RESULTS_DIR, video_name)
     output_masked_frame_dir = f'{tracking_result_dir}/{video_name}_masked_frames'
     if not os.path.isdir(output_masked_frame_dir):
         return None, None, None
@@ -486,7 +532,7 @@ def show_res_by_slider(input_video, input_img_seq, frame_per):
         print("Not find output res")
         return None, None
 
-    tracking_result_dir = f'{os.path.join(os.path.dirname(__file__), "tracking_results", f"{video_name}")}'
+    tracking_result_dir = os.path.join(TRACKING_RESULTS_DIR, video_name)
     output_masked_frame_dir = f'{tracking_result_dir}/{video_name}_masked_frames'
     output_masked_frame_path = sorted([os.path.join(output_masked_frame_dir, img_name) for img_name in os.listdir(output_masked_frame_dir)])
     total_frames_num = len(output_masked_frame_path)
@@ -515,18 +561,14 @@ def choose_obj_to_refine(input_video, input_img_seq, Seg_Tracker, frame_num, evt
 def show_chosen_idx_to_refine(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt, input_video, input_img_seq, Seg_Tracker, frame_num, idx):
     chosen_frame_show, curr_mask, ori_frame = res_by_num(input_video, input_img_seq, frame_num)
     if Seg_Tracker is None:
+        # If tracker is lost, we must re-initialize it before refinement.
         print("reset aot args, new SegTracker")
-        Seg_Tracker, _ , _, _ = init_SegTracker(aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, ori_frame, sam_ckpt, gd_ckpt)
-    Seg_Tracker.restart_tracker()
-    Seg_Tracker.curr_idx = 1
-    Seg_Tracker.object_idx = 1
-    Seg_Tracker.origin_merged_mask = None
-    Seg_Tracker.first_frame_mask = None
-    Seg_Tracker.reference_objs_list=[]
-    Seg_Tracker.everything_points = []
-    Seg_Tracker.everything_labels = []
-    Seg_Tracker.sam.have_embedded = False
-    Seg_Tracker.sam.interactive_predictor.features = None
+        Seg_Tracker = _ensure_tracker(Seg_Tracker, ori_frame, aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side, sam_ckpt, gd_ckpt)
+
+    # Reset the tracker state completely to prepare for refinement from this frame
+    if Seg_Tracker:
+        Seg_Tracker.reset_state()
+        
     return ori_frame, Seg_Tracker, ori_frame, [[], []], ""
 
 def seg_track_app():
@@ -624,15 +666,7 @@ def seg_track_app():
                                 text_threshold = gr.Slider(
                                     label="Text Threshold", minimum=0.0, maximum=1.0, value=0.25, step=0.001
                                 )
-                tab_audio_grounding = gr.Tab(label="Audio Grounding")
-                with tab_audio_grounding:
-                    label_num = gr.Slider(label="Number of Labels", minimum=1, maximum=10, value=6, step=1)
-                    threshold = gr.Slider(label="Threshold", minimum=0.0, maximum=1.0, value=0.05, step=0.01)
-                    audio_to_text_button = gr.Button(value="detect the label of the sound-making object", interactive=True)
-                    top_labels_and_probs_dic = gr.Label(label="Top Labels and Probabilities")
-                    predicted_texts = gr.Textbox(label="Predicted Text")
-                    audio_grounding_button = gr.Button(value="ground the sound-making object", interactive=True)
-
+                
                 with gr.Row():
                     with gr.Column(scale=2): 
                         with gr.Tab(label="SegTracker Args"):
@@ -684,7 +718,7 @@ def seg_track_app():
                                         "ckpt/sam_vit_l_0b3195.pth",
                                         "ckpt/sam_vit_b_01ec64.pth",
                                     ],
-                                    value=sam_args["sam_checkpoint"],
+                                    value=default_sam_args["sam_checkpoint"],
                                     interactive=True,
                                 )
                                 gd_ckpt = gr.Dropdown(
@@ -693,7 +727,7 @@ def seg_track_app():
                                         "ckpt/groundingdino_swint_ogc.pth",
                                         "ckpt/groundingdino_swinb_cogcoor.pth",
                                     ],
-                                    value=gd_args["ckpt_path"],
+                                    value=default_gd_args["ckpt_path"],
                                     interactive=True,
                                 )
                     
@@ -850,7 +884,7 @@ def seg_track_app():
         )
 
         tab_stroke.select(
-            fn=init_SegTracker_Stroke,
+            fn=init_SegTracker,
             inputs=[
                 aot_model,
                 long_term_mem,
@@ -861,7 +895,7 @@ def seg_track_app():
                 origin_frame,
                 sam_ckpt, gd_ckpt],
             outputs=[
-                Seg_Tracker, input_first_frame, click_stack, drawing_board
+                Seg_Tracker, input_first_frame, click_stack, grounding_caption
             ],
             queue=False,
         )
@@ -881,44 +915,6 @@ def seg_track_app():
                 Seg_Tracker, input_first_frame, click_stack, grounding_caption
             ],
             queue=False,
-        )
-
-        tab_audio_grounding.select(
-            fn=init_SegTracker,
-            inputs=[
-                aot_model,
-                long_term_mem,
-                max_len_long_term,
-                sam_gap,
-                max_obj_num,
-                points_per_side,
-                origin_frame,
-                sam_ckpt, gd_ckpt],
-            outputs=[
-                Seg_Tracker, input_first_frame, click_stack, grounding_caption
-            ],
-            queue=False,
-        )
-
-        audio_to_text_button.click(
-            fn=audio_to_text,
-            inputs=[
-                input_video,label_num,threshold
-            ],
-            outputs=[
-                predicted_texts, top_labels_and_probs_dic
-            ]
-        )
-
-        audio_grounding_button.click(
-            fn=gd_detect,
-            inputs=[
-                Seg_Tracker, origin_frame, predicted_texts, box_threshold, text_threshold,
-                aot_model, long_term_mem, max_len_long_term, sam_gap, max_obj_num, points_per_side,
-                sam_ckpt, gd_ckpt],
-            outputs=[
-                Seg_Tracker, input_first_frame
-            ]
         )
 
         # Use SAM to segment everything for the first frame of video
@@ -1043,15 +1039,8 @@ def seg_track_app():
         roll_back_click_undo_but.click(
             fn = roll_back_undo_click_stack_and_refine_seg,
             inputs=[
-                Seg_Tracker, origin_frame, click_stack,
-                aot_model,
-                long_term_mem,
-                max_len_long_term,
-                sam_gap,
-                max_obj_num,
-                points_per_side,
-                input_video, input_img_seq, frame_num, refine_idx,
-                sam_ckpt, gd_ckpt],
+                Seg_Tracker, origin_frame, click_stack, input_video, input_img_seq, frame_num, refine_idx
+            ],
             outputs=[
                 Seg_Tracker, refine_res, click_stack
             ]
@@ -1112,14 +1101,8 @@ def seg_track_app():
         click_undo_but.click(
             fn = undo_click_stack_and_refine_seg,
             inputs=[
-                Seg_Tracker, origin_frame, click_stack,
-                aot_model,
-                long_term_mem,
-                max_len_long_term,
-                sam_gap,
-                max_obj_num,
-                points_per_side,
-                sam_ckpt, gd_ckpt],
+                Seg_Tracker, origin_frame, click_stack
+            ],
             outputs=[
                 Seg_Tracker, input_first_frame, click_stack
             ]
@@ -1128,14 +1111,8 @@ def seg_track_app():
         every_undo_but.click(
             fn = undo_click_stack_and_refine_seg,
             inputs=[
-                Seg_Tracker, origin_frame, click_stack,
-                aot_model,
-                long_term_mem,
-                max_len_long_term,
-                sam_gap,
-                max_obj_num,
-                points_per_side,
-                sam_ckpt, gd_ckpt],
+                Seg_Tracker, origin_frame, click_stack
+            ],
             outputs=[
                 Seg_Tracker, input_first_frame, click_stack
             ]
@@ -1144,16 +1121,14 @@ def seg_track_app():
         with gr.Tab(label='Video example'):
             gr.Examples(
                 examples=[
-                    os.path.join(os.path.dirname(__file__), "assets", "blackswan.mp4"),
-                    ],
+                    os.path.join(ASSETS_DIR, "blackswan.mp4"),                    ],
                 inputs=[input_video],
             )
         
         with gr.Tab(label='Image-seq example'):
             gr.Examples(
                 examples=[
-                    os.path.join(os.path.dirname(__file__), "assets", "840_iSXIa0hE8Ek.zip"),
-                ],
+                    os.path.join(ASSETS_DIR, "840_iSXIa0hE8Ek.zip"),                ],
                 inputs=[input_img_seq],
             )
     

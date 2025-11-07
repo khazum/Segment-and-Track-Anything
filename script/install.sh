@@ -14,7 +14,3 @@ pip install wget
 # Install Pytorch Correlation
 pip install spatial-correlation-sampler
 
-# Install AST
-git clone https://github.com/YuanGongND/ast.git ../ast_master
-cp ../prepare.py ../ast_master
-

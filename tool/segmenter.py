@@ -27,11 +27,15 @@ class Segmenter:
         self.everything_generator = SamAutomaticMaskGenerator(model=self.sam, **sam_args['generator_args'])
         self.interactive_predictor = self.everything_generator.predictor
         self.have_embedded = False
-        
+
+    def reset_image(self):
+        self.interactive_predictor.reset_image()
+        self.have_embedded = False
+
     @torch.no_grad()
-    def set_image(self, image):
+    def set_image(self, image, force=False):
         # calculate the embedding only once per frame.
-        if not self.have_embedded:
+        if not self.have_embedded or force:
             self.interactive_predictor.set_image(image)
             self.have_embedded = True
     @torch.no_grad()
@@ -78,15 +82,15 @@ class Segmenter:
         return mask.astype(np.uint8)
 
     def segment_with_box(self, origin_frame, bbox, reset_image=False):
-        if reset_image:
-            self.interactive_predictor.set_image(origin_frame)
-        else:
-            self.set_image(origin_frame)
+        # If reset_image is True, force re-embedding
+        self.set_image(origin_frame, force=reset_image)
+
+        bbox_np = np.array([bbox[0][0], bbox[0][1], bbox[1][0], bbox[1][1]])
 
         masks, scores, logits = self.interactive_predictor.predict(
             point_coords=None,
             point_labels=None,
-            box=np.array([bbox[0][0], bbox[0][1], bbox[1][0], bbox[1][1]]),
+            box=bbox_np,
             multimask_output=True
         )
         mask, logit = masks[np.argmax(scores)], logits[np.argmax(scores), :, :]
@@ -94,10 +98,10 @@ class Segmenter:
         masks, scores, logits = self.interactive_predictor.predict(
             point_coords=None,
             point_labels=None,
-            box=np.array([[bbox[0][0], bbox[0][1], bbox[1][0], bbox[1][1]]]),
+            box=bbox_np[None, :], # Expects (1, 4) array
             mask_input=logit[None, :, :],
             multimask_output=True
         )
         mask = masks[np.argmax(scores)]
         
-        return [mask]
+        return mask
